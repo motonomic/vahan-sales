@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RTO Sales Dashboard</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1c2230;--mute:#6b7385;--line:#e3e6ec;--acc:#1f4fd8;--up:#17803d;--down:#c0392b;--head:#eef1f7}
+@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--ink:#e8ebf2;--mute:#9aa3b5;--line:#2a3140;--acc:#6f95ff;--up:#4cc27a;--down:#ff7b6b;--head:#222938}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:16px 20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:var(--card)}
+h1{font-size:18px;margin:0}
+.sub{color:var(--mute);font-size:12px}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.card h2{font-size:14px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+.btn{background:var(--acc);color:#fff;border:0;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;font-weight:600}
+.btn.ghost{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+#drop{border:2px dashed var(--line);border-radius:10px;padding:18px;text-align:center;color:var(--mute);cursor:pointer}
+#drop.over{border-color:var(--acc);background:var(--head)}
+#msg{margin-top:8px;font-size:13px}
+#msg .ok{color:var(--up)}#msg .err{color:var(--down)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.kpi .l{color:var(--mute);font-size:12px}.kpi .v{font-size:28px;font-weight:700;margin-top:2px}
+.kpi .d{font-size:12px;margin-top:2px}
+.up{color:var(--up)}.down{color:var(--down)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:860px){.grid2{grid-template-columns:1fr}}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{background:var(--head);font-weight:600;position:sticky;top:0}
+tfoot td{font-weight:700;background:var(--head)}
+.scroll{overflow:auto;max-height:420px}
+.chartbox{position:relative;height:380px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.chip{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 10px;margin:2px;font-size:12px}
+.chip button{border:0;background:none;color:var(--mute);cursor:pointer;font-size:14px;padding:0}
+.empty{padding:40px;text-align:center;color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>RTO Sales Dashboard</h1>
+    <div class="sub" id="asof">No data loaded</div>
+  </div>
+  <div class="actions">
+    <button class="btn" id="dlReport" disabled>⬇ Download report (.xlsx)</button>
+    <button class="btn ghost" id="dlData" disabled title="Download data.json to commit to the repo so everyone sees the same data">⬇ data.json</button>
+  </div>
+</header>
+<main>
+  <div class="card">
+    <h2>Upload today's files</h2>
+    <div id="drop">Drop the RTO “reportTable” .xlsx files here, or click to choose (select all 5 at once)
+      <input type="file" id="file" accept=".xlsx,.xls,.csv" multiple hidden>
+    </div>
+    <div id="msg"></div>
+    <div style="margin-top:8px"><span class="sub">Loaded RTOs:</span> <span id="chips"></span></div>
+  </div>
+
+  <div id="dash"></div>
+</main>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/chart.umd.js"></script>
+<script>
+const MONTHS=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+const MFULL=['January','February','March','April','May','June','July','August','September','October','November','December'];
+const LS='rtoDashboardData.v1';
+let db={rtos:{}}, chart=null, topN=5;
+
+const $=id=>document.getElementById(id);
+const fmt=n=>Number(n||0).toLocaleString('en-IN');
+const clean=s=>String(s==null?'':s).replace(/ /g,' ').trim();
+const num=v=>{const n=parseInt(String(v==null?'':v).replace(/[^\d-]/g,''),10);return isNaN(n)?0:n};
+const short=n=>n.replace(/\(UNIT OF EICHER LTD\)/,'').replace(/\(IMPORTER:.*\)/,'(Imp.)').replace(/\(P\)/,'')
+  .replace(/\b(PVT|PRIVATE|LTD|LIMITED|COMPANY|INDIA)\b\.?/g,'').replace(/\s+/g,' ').trim()
+  .toLowerCase().replace(/(^|[\s-])\w/g,c=>c.toUpperCase()).replace(/\b(Tvs|Bmw|Ola|Klb|Rgm)\b/g,m=>m.toUpperCase());
+
+/* ---------- parse one report ---------- */
+function parseSheet(rows){
+  const title=clean(rows[0] && rows[0][0]);
+  const t=title.match(/of\s+(.+?)\s*-\s*(KL\d+)\s*,.*?\((\d{4})\)/i);
+  if(!t) throw new Error('title row not recognised');
+  const hi=rows.findIndex(r=>r.some(c=>clean(c).toUpperCase()==='JAN'));
+  if(hi<0) throw new Error('month header not found');
+  const cols={};
+  rows[hi].forEach((c,i)=>{const m=MONTHS.indexOf(clean(c).toUpperCase());if(m>=0)cols[m]=i;});
+  const makers={};
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]; const name=clean(r[1]);
+    if(!name||!clean(r[0])||/^total/i.test(name)) continue;
+    makers[name]=MONTHS.map((_,m)=>cols[m]!=null?num(r[cols[m]]):0);
+  }
+  if(!Object.keys(makers).length) throw new Error('no manufacturer rows');
+  return {name:t[1].trim(),code:t[2].toUpperCase(),year:+t[3],makers};
+}
+
+/* ---------- storage ---------- */
+function saveLocal(){try{localStorage.setItem(LS,JSON.stringify(db))}catch(e){}}
+async function loadInitial(){
+  let seed={rtos:{}};
+  try{const r=await fetch('data/data.json',{cache:'no-store'});if(r.ok)seed=await r.json();}catch(e){}
+  let local={rtos:{}};
+  try{local=JSON.parse(localStorage.getItem(LS)||'{"rtos":{}}')}catch(e){}
+  db={rtos:{...seed.rtos}};
+  for(const [k,v] of Object.entries(local.rtos||{})){
+    if(!db.rtos[k]||new Date(v.uploaded)>=new Date(db.rtos[k].uploaded)) db.rtos[k]=v;
+  }
+}
+
+/* ---------- upload ---------- */
+async function handleFiles(files){
+  const out=[];
+  for(const f of files){
+    try{
+      const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+      const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
+      const p=parseSheet(rows);
+      db.rtos[p.code]={...p,uploaded:new Date().toISOString()};
+      out.push(`<div class="ok">✓ ${p.name} (${p.code}) – ${Object.keys(p.makers).length} manufacturers</div>`);
+    }catch(e){out.push(`<div class="err">✗ ${f.name}: ${e.message}</div>`);}
+  }
+  $('msg').innerHTML=out.join('');
+  saveLocal();render();
+}
+
+/* ---------- aggregation ---------- */
+const rtoList=()=>Object.values(db.rtos).sort((a,b)=>a.code.localeCompare(b.code));
+function refMonth(){
+  const rs=rtoList(); const year=Math.max(...rs.map(r=>r.year));
+  const now=new Date();
+  let cur;
+  if(now.getFullYear()===year) cur=now.getMonth();
+  else { cur=11; rs.forEach(r=>{for(let m=11;m>=0;m--){if(Object.values(r.makers).some(v=>v[m])){cur=Math.min(cur,11);break}}}); }
+  return {year,cur};
+}
+// units by maker for month m  -> {maker:{code:units}}
+function byMaker(m){
+  const o={};
+  for(const r of rtoList()) if(m>=0) for(const [mk,v] of Object.entries(r.makers)){(o[mk]=o[mk]||{})[r.code]=(v[m]||0);}
+  return o;
+}
+const sumObj=o=>Object.values(o).reduce((a,b)=>a+b,0);
+function monthTotals(m){
+  const mk=byMaker(m),res={};
+  for(const k in mk) res[k]=sumObj(mk[k]);
+  return res;
+}
+function rtoMonth(m){const o={};for(const r of rtoList())o[r.code]=m<0?0:Object.values(r.makers).reduce((a,v)=>a+(v[m]||0),0);return o}
+const pct=(a,b)=>b?((a-b)/b*100):null;
+// compare daily averages so a part-month is comparable with a full month
+function dayInfo(){const {year,cur}=refMonth();const now=new Date();
+  const dc=(now.getFullYear()===year&&now.getMonth()===cur)?now.getDate():new Date(year,cur+1,0).getDate();
+  const dp=cur>0?new Date(year,cur,0).getDate():30;return {dc,dp}}
+const rr=(a,b)=>{const {dc,dp}=dayInfo();return b?((a/dc)/(b/dp)-1)*100:null};
+const delta=(a,b)=>{const p=rr(a,b);if(p==null)return '<span class="sub">–</span>';return `<span class="${p>=0?'up':'down'}">${p>=0?'▲':'▼'} ${Math.abs(p).toFixed(1)}%</span>`};
+
+/* ---------- render ---------- */
+function render(){
+  const rs=rtoList();
+  $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.uploaded).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}<button title="remove" onclick="removeRto('${r.code}')">×</button></span>`).join('')||'<span class="sub">none</span>';
+  $('dlReport').disabled=$('dlData').disabled=!rs.length;
+  if(!rs.length){$('dash').innerHTML='<div class="empty">Upload the RTO files to see the dashboard.</div>';$('asof').textContent='No data loaded';return}
+  const {year,cur}=refMonth(), prev=cur-1;
+  const latest=new Date(Math.max(...rs.map(r=>+new Date(r.uploaded))));
+  $('asof').textContent=`Data as of ${latest.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})} · ${rs.length} RTO${rs.length>1?'s':''}`;
+  const curL=`${MFULL[cur]} ${year} (till date)`, prevL=prev>=0?`${MFULL[prev]} ${year}`:'–';
+  const mc=monthTotals(cur), mp=monthTotals(prev), rc=rtoMonth(cur), rp=rtoMonth(prev);
+  const tc=sumObj(mc), tp=sumObj(mp);
+  const makers=[...new Set([...Object.keys(mc),...Object.keys(mp)])].sort((a,b)=>(mc[b]||0)-(mc[a]||0)||(mp[b]||0)-(mp[a]||0));
+  const topC=makers[0], topR=Object.entries(rc).sort((a,b)=>b[1]-a[1])[0];
+  const nameOf=c=>db.rtos[c].name;
+
+  const rtoRows=rs.map(r=>`<tr><td>${r.name}</td><td>${fmt(rc[r.code])}</td><td>${fmt(rp[r.code])}</td><td>${delta(rc[r.code],rp[r.code])}</td></tr>`).join('');
+  const mkRows=makers.map(k=>`<tr><td>${short(k)}</td><td>${fmt(mc[k]||0)}</td><td>${fmt(mp[k]||0)}</td><td>${delta(mc[k]||0,mp[k]||0)}</td></tr>`).join('');
+
+  $('dash').innerHTML=`
+  <div class="kpis">
+    <div class="kpi"><div class="l">${curL}</div><div class="v">${fmt(tc)}</div><div class="d sub">registrations, all RTOs</div></div>
+    <div class="kpi"><div class="l">${prevL}</div><div class="v">${fmt(tp)}</div><div class="d">${delta(tc,tp)} <span class="sub">daily average vs previous month</span></div></div>
+    <div class="kpi"><div class="l">Top maker (${MONTHS[cur]})</div><div class="v" style="font-size:20px">${topC?short(topC):'–'}</div><div class="d sub">${topC?fmt(mc[topC])+' units · '+(tc?(mc[topC]/tc*100).toFixed(1):0)+'%':''}</div></div>
+    <div class="kpi"><div class="l">Top RTO (${MONTHS[cur]})</div><div class="v" style="font-size:20px">${topR?nameOf(topR[0]):'–'}</div><div class="d sub">${topR?fmt(topR[1])+' units':''}</div></div>
+  </div>
+  <div class="card">
+    <h2>Top makers – monthly trend (${year})</h2>
+    <div class="row"><label>Show top <select id="topN">${[3,5,8,10].map(n=>`<option ${n===topN?'selected':''}>${n}</option>`).join('')}</select> makers by year-to-date units</label>
+    <span class="sub">Dashed segment = current month, still in progress.</span></div>
+    <div class="chartbox"><canvas id="cv"></canvas></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h2>Sales by RTO</h2><div class="scroll"><table>
+      <thead><tr><th>RTO</th><th>${MONTHS[cur]} (MTD)</th><th>${prev>=0?MONTHS[prev]:'–'}</th><th title="Change in daily average vs previous month">Daily avg Δ</th></tr></thead>
+      <tbody>${rtoRows}</tbody>
+      <tfoot><tr><td>Total</td><td>${fmt(tc)}</td><td>${fmt(tp)}</td><td>${delta(tc,tp)}</td></tr></tfoot></table></div></div>
+    <div class="card"><h2>Sales by manufacturer</h2><div class="scroll"><table>
+      <thead><tr><th>Manufacturer</th><th>${MONTHS[cur]} (MTD)</th><th>${prev>=0?MONTHS[prev]:'–'}</th><th title="Change in daily average vs previous month">Daily avg Δ</th></tr></thead>
+      <tbody>${mkRows}</tbody>
+      <tfoot><tr><td>Total</td><td>${fmt(tc)}</td><td>${fmt(tp)}</td><td>${delta(tc,tp)}</td></tr></tfoot></table></div></div>
+  </div>`;
+  $('topN').onchange=e=>{topN=+e.target.value;drawChart()};
+  drawChart();
+}
+
+const PAL=['#1f4fd8','#e8590c','#2f9e44','#9c36b5','#f08c00','#0c8599','#c2255c','#5c7cfa','#66a80f','#495057'];
+function drawChart(){
+  const {cur}=refMonth(); const rs=rtoList();
+  const ytd={}; const monthly={};
+  for(const r of rs) for(const [mk,v] of Object.entries(r.makers)){
+    monthly[mk]=monthly[mk]||Array(12).fill(0);
+    v.forEach((x,m)=>{monthly[mk][m]+=x}); }
+  for(const mk in monthly) ytd[mk]=monthly[mk].slice(0,cur+1).reduce((a,b)=>a+b,0);
+  const top=Object.keys(ytd).sort((a,b)=>ytd[b]-ytd[a]).slice(0,topN);
+  const labels=MONTHS.slice(0,cur+1);
+  const ds=top.map((mk,i)=>({label:short(mk),data:monthly[mk].slice(0,cur+1),borderColor:PAL[i%PAL.length],backgroundColor:PAL[i%PAL.length],tension:.25,pointRadius:3,borderWidth:2,
+    segment:{borderDash:c=>c.p1DataIndex===cur?[6,5]:undefined}}));
+  if(chart)chart.destroy();
+  const dark=matchMedia('(prefers-color-scheme:dark)').matches, tick=dark?'#9aa3b5':'#6b7385', grid=dark?'#2a3140':'#e3e6ec';
+  chart=new Chart($('cv'),{type:'line',data:{labels,datasets:ds},options:{responsive:true,maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{legend:{position:'bottom',labels:{color:tick,usePointStyle:true}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fmt(c.parsed.y)}`}}},
+    scales:{x:{ticks:{color:tick},grid:{color:grid}},y:{beginAtZero:true,ticks:{color:tick,callback:v=>fmt(v)},grid:{color:grid},title:{display:true,text:'Registrations',color:tick}}}}});
+}
+
+function removeRto(c){delete db.rtos[c];saveLocal();render()}
+
+/* ---------- report download ---------- */
+function downloadReport(){
+  const {year,cur}=refMonth(),prev=cur-1,rs=rtoList();
+  const wb=XLSX.utils.book_new();
+  const add=(name,aoa,w)=>{const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=w.map(x=>({wch:x}));XLSX.utils.book_append_sheet(wb,ws,name)};
+  const mc=monthTotals(cur),mp=monthTotals(prev);
+  const makers=[...new Set([...Object.keys(mc),...Object.keys(mp)])].sort((a,b)=>(mc[b]||0)-(mc[a]||0));
+  // summary
+  const sum=[[`RTO sales report – ${MFULL[cur]} ${year} (till date) vs ${prev>=0?MFULL[prev]:'-'}`],[`Generated ${new Date().toLocaleString('en-IN')}`],[],
+    ['Manufacturer',`${MONTHS[cur]} (MTD)`,prev>=0?MONTHS[prev]:'-','Daily avg change %']];
+  makers.forEach(k=>{const a=mc[k]||0,b=mp[k]||0;sum.push([k,a,b,b?+rr(a,b).toFixed(1):'']);});
+  const ta=sumObj(mc),tb=sumObj(mp);sum.push(['TOTAL',ta,tb,tb?+rr(ta,tb).toFixed(1):'']);
+  sum.push([],['RTO',`${MONTHS[cur]} (MTD)`,prev>=0?MONTHS[prev]:'-','Daily avg change %']);
+  const rc=rtoMonth(cur),rp=rtoMonth(prev);
+  rs.forEach(r=>sum.push([`${r.name} (${r.code})`,rc[r.code],rp[r.code],rp[r.code]?+rr(rc[r.code],rp[r.code]).toFixed(1):'']));
+  sum.push(['TOTAL',ta,tb,tb?+rr(ta,tb).toFixed(1):'']);
+  add('Summary',sum,[48,16,14,12]);
+  // maker x rto
+  const mxr=(m,label)=>{
+    const bm=byMaker(m);const ks=Object.keys(bm).sort((a,b)=>sumObj(bm[b])-sumObj(bm[a]));
+    const aoa=[[`Manufacturer x RTO – ${label}`],[],['Manufacturer',...rs.map(r=>`${r.name} (${r.code})`),'Total']];
+    ks.forEach(k=>aoa.push([k,...rs.map(r=>bm[k][r.code]||0),sumObj(bm[k])]));
+    aoa.push(['TOTAL',...rs.map(r=>ks.reduce((a,k)=>a+(bm[k][r.code]||0),0)),ks.reduce((a,k)=>a+sumObj(bm[k]),0)]);
+    return aoa};
+  const w=[48,...rs.map(()=>20),12];
+  add(`${MONTHS[cur]} MTD`,mxr(cur,`${MFULL[cur]} ${year} (till date)`),w);
+  if(prev>=0)add(MONTHS[prev],mxr(prev,`${MFULL[prev]} ${year}`),w);
+  // YTD maker x rto
+  const ytd={};rs.forEach(r=>Object.entries(r.makers).forEach(([k,v])=>{(ytd[k]=ytd[k]||{})[r.code]=v.slice(0,cur+1).reduce((a,b)=>a+b,0)}));
+  const yk=Object.keys(ytd).sort((a,b)=>sumObj(ytd[b])-sumObj(ytd[a]));
+  const ya=[[`Manufacturer x RTO – Year to date ${year}`],[],['Manufacturer',...rs.map(r=>`${r.name} (${r.code})`),'Total']];
+  yk.forEach(k=>ya.push([k,...rs.map(r=>ytd[k][r.code]||0),sumObj(ytd[k])]));
+  ya.push(['TOTAL',...rs.map(r=>yk.reduce((a,k)=>a+(ytd[k][r.code]||0),0)),yk.reduce((a,k)=>a+sumObj(ytd[k]),0)]);
+  add('YTD',ya,w);
+  // monthly by maker
+  const mm=[[`Month-wise by manufacturer – all RTOs, ${year}`],[],['Manufacturer',...MONTHS.slice(0,cur+1),'Total']];
+  yk.forEach(k=>{const row=Array(cur+1).fill(0);rs.forEach(r=>{const v=r.makers[k];if(v)for(let m=0;m<=cur;m++)row[m]+=v[m]});mm.push([k,...row,row.reduce((a,b)=>a+b,0)])});
+  add('Monthly by maker',mm,[48,...Array(cur+2).fill(9)]);
+  // monthly by rto
+  const rm=[[`Month-wise by RTO, ${year}`],[],['RTO',...MONTHS.slice(0,cur+1),'Total']];
+  rs.forEach(r=>{const row=MONTHS.slice(0,cur+1).map((_,m)=>Object.values(r.makers).reduce((a,v)=>a+(v[m]||0),0));rm.push([`${r.name} (${r.code})`,...row,row.reduce((a,b)=>a+b,0)])});
+  add('Monthly by RTO',rm,[30,...Array(cur+2).fill(9)]);
+  const d=new Date(),p=n=>String(n).padStart(2,'0');
+  XLSX.writeFile(wb,`RTO_Sales_Report_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}.xlsx`);
+}
+function downloadData(){
+  const blob=new Blob([JSON.stringify(db)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.json';a.click();
+}
+
+/* ---------- wire up ---------- */
+const drop=$('drop'),fi=$('file');
+drop.onclick=()=>fi.click();
+fi.onchange=()=>{handleFiles([...fi.files]);fi.value=''};
+['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',ev=>handleFiles([...ev.dataTransfer.files]));
+$('dlReport').onclick=downloadReport;$('dlData').onclick=downloadData;
+loadInitial().then(render);
+</script>
+</body>
+</html>
