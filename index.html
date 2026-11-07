@@ -52,28 +52,43 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
   </div>
   <div class="actions">
     <button class="btn" id="dlReport" disabled>⬇ Download report (.xlsx)</button>
-    <button class="btn ghost" id="dlData" disabled title="Download data.json to commit to the repo so everyone sees the same data">⬇ data.json</button>
+    <span class="sub" id="who"></span><button class="btn ghost" id="signout" hidden>Sign out</button>
   </div>
 </header>
 <main>
-  <div class="card">
-    <h2>Upload latest files</h2>
-    <div id="drop">Drop RTO report files here (single-RTO files, or a combined workbook with one sheet per RTO), or click to choose
-      <input type="file" id="file" accept=".xlsx,.xls,.csv" multiple hidden>
-    </div>
-    <div id="msg"></div>
-    <div style="margin-top:8px"><span class="sub">Loaded RTOs:</span> <span id="chips"></span></div>
+  <div class="card" id="login" hidden style="max-width:380px;margin:60px auto">
+    <h2>Sign in</h2>
+    <form id="loginForm">
+      <label class="sub">Email</label><br><input id="email" type="email" required autocomplete="username" style="width:100%;padding:8px;margin:4px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"><br>
+      <label class="sub">Password</label><br><input id="pass" type="password" required autocomplete="current-password" style="width:100%;padding:8px;margin:4px 0 12px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"><br>
+      <button class="btn" type="submit" id="loginBtn">Sign in</button>
+      <div id="loginMsg" class="err" style="margin-top:10px;color:var(--down)"></div>
+    </form>
   </div>
 
-  <div id="dash"></div>
+  <div id="app" hidden>
+    <div class="card" id="uploadCard" hidden>
+      <h2>Upload latest files</h2>
+      <div id="drop">Drop RTO report files here (single-RTO files, or a combined workbook with one sheet per RTO), or click to choose
+        <input type="file" id="file" accept=".xlsx,.xls,.csv" multiple hidden>
+      </div>
+      <div id="msg"></div>
+    </div>
+    <div class="sub" style="margin:0 0 12px">Loaded RTOs: <span id="chips"></span></div>
+    <div id="dash"></div>
+  </div>
 </main>
 
 <script src="vendor/xlsx.full.min.js"></script>
 <script src="vendor/chart.umd.js"></script>
+<script src="vendor/supabase.js"></script>
 <script>
 const MONTHS=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 const MFULL=['January','February','March','April','May','June','July','August','September','October','November','December'];
-const LS='rtoDashboardData.v1';
+const SB_URL='https://vjjvrnpmfwjxkkrltefh.supabase.co';
+const SB_KEY='sb_publishable_VzVuDeRk6repPp8Qj1LZKw_IaebK0z5'; // publishable key: safe in browser code; access is enforced by database rules
+const sb=supabase.createClient(SB_URL,SB_KEY);
+let canUpload=false;
 let db={rtos:{}}, chart=null, topN=5;
 
 const $=id=>document.getElementById(id);
@@ -141,22 +156,19 @@ function parseWorkbook(wb){
   return {best,skipped};
 }
 
-/* ---------- storage ---------- */
-function saveLocal(){try{localStorage.setItem(LS,JSON.stringify(db))}catch(e){}}
-async function loadInitial(){
-  let seed={rtos:{}};
-  try{const r=await fetch('data/data.json',{cache:'no-store'});if(r.ok)seed=await r.json();}catch(e){}
-  let local={rtos:{}};
-  try{local=JSON.parse(localStorage.getItem(LS)||'{"rtos":{}}')}catch(e){}
-  db={rtos:{...seed.rtos}};for(const v of Object.values(db.rtos))if(!v.asof)v.asof=(v.uploaded||'').slice(0,10);
-  for(const [k,v] of Object.entries(local.rtos||{})){
-    const e=db.rtos[k];if(!v.asof)v.asof=(v.uploaded||'').slice(0,10);if(!e||v.asof>e.asof||(v.asof===e.asof&&new Date(v.uploaded)>=new Date(e.uploaded)))db.rtos[k]=v;
-  }
+/* ---------- storage (Supabase) ---------- */
+async function loadFromDb(){
+  const {data,error}=await sb.from('rto_reports').select('*');
+  if(error)throw new Error(error.message);
+  db={rtos:{}};
+  for(const r of data)db.rtos[r.code]={name:r.name,code:r.code,year:r.year,asof:r.asof,uploaded:r.uploaded,makers:r.makers};
 }
 
 /* ---------- upload ---------- */
 async function handleFiles(files){
-  const out=[],today=ymd(new Date()),dl=d=>d?new Date(d+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'no date';
+  const out=[];
+  try{await loadFromDb()}catch(e){$('msg').innerHTML=`<div class="err">Could not read current data: ${e.message}</div>`;return}
+  const today=ymd(new Date()),dl=d=>d?new Date(d+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'no date';
   for(const f of files){
     try{
       const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
@@ -167,13 +179,16 @@ async function handleFiles(files){
         const p=best[code],asof=p.asof||today,ex=db.rtos[code];
         const note=(skipped[code]||[]).length?` <span class="sub">(older table${skipped[code].length>1?'s':''} ignored: ${skipped[code].map(dl).join(', ')})</span>`:'';
         if(ex&&ex.asof>asof){out.push(`<div class="err">– ${p.name} (${code}): file dated ${dl(asof)} is older than loaded data (${dl(ex.asof)}) – kept the newer data</div>`);continue}
-        db.rtos[code]={name:p.name,code,year:p.year,asof,uploaded:new Date().toISOString(),makers:p.makers};
+        const row={code,name:p.name,year:p.year,asof,uploaded:new Date().toISOString(),makers:p.makers};
+        const {error}=await sb.from('rto_reports').upsert(row,{onConflict:'code'});
+        if(error){out.push(`<div class="err">✗ ${p.name} (${code}): ${error.message}</div>`);continue}
+        db.rtos[code]=row;
         out.push(`<div class="ok">✓ ${p.name} (${code}) – data dated ${dl(asof)} – ${Object.keys(p.makers).length} manufacturers${note}</div>`);
       }
     }catch(e){out.push(`<div class="err">✗ ${f.name}: ${e.message}</div>`);}
   }
   $('msg').innerHTML=out.join('');
-  saveLocal();render();
+  render();
 }
 
 /* ---------- aggregation ---------- */
@@ -207,9 +222,9 @@ const delta=(a,b)=>{const p=rr(a,b);if(p==null)return '<span class="sub">–</sp
 /* ---------- render ---------- */
 function render(){
   const rs=rtoList();
-  $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}<button title="remove" onclick="removeRto('${r.code}')">×</button></span>`).join('')||'<span class="sub">none</span>';
-  $('dlReport').disabled=$('dlData').disabled=!rs.length;
-  if(!rs.length){$('dash').innerHTML='<div class="empty">Upload the RTO files to see the dashboard.</div>';$('asof').textContent='No data loaded';return}
+  $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>`).join('')||'<span class="sub">none</span>';
+  $('dlReport').disabled=!rs.length;
+  if(!rs.length){$('dash').innerHTML=`<div class="empty">No data yet.${canUpload?' Upload the RTO report files above.':' Ask an uploader to add the latest files.'}</div>`;$('asof').textContent='No data loaded';return}
   const {year,cur}=refMonth(), prev=cur-1;
   const latest=new Date(latestAsof()+'T00:00');
   $('asof').textContent=`Data as of ${latest.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${rs.length} RTO${rs.length>1?'s':''}`;
@@ -270,7 +285,6 @@ function drawChart(){
     scales:{x:{ticks:{color:tick},grid:{color:grid}},y:{beginAtZero:true,ticks:{color:tick,callback:v=>fmt(v)},grid:{color:grid},title:{display:true,text:'Registrations',color:tick}}}}});
 }
 
-function removeRto(c){delete db.rtos[c];saveLocal();render()}
 
 /* ---------- report download ---------- */
 function downloadReport(){
@@ -317,10 +331,6 @@ function downloadReport(){
   const d=new Date(),p=n=>String(n).padStart(2,'0');
   XLSX.writeFile(wb,`RTO_Sales_Report_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}.xlsx`);
 }
-function downloadData(){
-  const blob=new Blob([JSON.stringify(db)],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.json';a.click();
-}
 
 /* ---------- wire up ---------- */
 const drop=$('drop'),fi=$('file');
@@ -329,8 +339,36 @@ fi.onchange=()=>{handleFiles([...fi.files]);fi.value=''};
 ['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
 drop.addEventListener('drop',ev=>handleFiles([...ev.dataTransfer.files]));
-$('dlReport').onclick=downloadReport;$('dlData').onclick=downloadData;
-loadInitial().then(render);
+$('dlReport').onclick=downloadReport;
+
+/* ---------- sign-in ---------- */
+function showLogin(msg){
+  $('app').hidden=true;$('login').hidden=false;$('signout').hidden=true;$('who').textContent='';
+  $('asof').textContent='Please sign in';$('loginMsg').textContent=msg||'';
+}
+async function start(session){
+  $('login').hidden=true;$('app').hidden=false;$('signout').hidden=false;
+  $('who').textContent=session.user.email;
+  try{
+    const {data,error}=await sb.from('uploaders').select('user_id').eq('user_id',session.user.id);
+    canUpload=!error&&data.length>0;
+    $('uploadCard').hidden=!canUpload;
+    await loadFromDb();
+  }catch(e){$('dash').innerHTML=`<div class="empty err">Could not load data: ${e.message}</div>`;return}
+  render();
+}
+$('loginForm').onsubmit=async ev=>{
+  ev.preventDefault();$('loginBtn').disabled=true;$('loginMsg').textContent='';
+  const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('pass').value});
+  $('loginBtn').disabled=false;
+  if(error){$('loginMsg').textContent=error.message;return}
+  $('pass').value='';start(data.session);
+};
+$('signout').onclick=async()=>{await sb.auth.signOut();db={rtos:{}};canUpload=false;showLogin()};
+(async()=>{
+  const {data}=await sb.auth.getSession();
+  if(data.session)start(data.session);else showLogin();
+})();
 </script>
 </body>
 </html>
