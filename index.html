@@ -57,8 +57,8 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
 </header>
 <main>
   <div class="card">
-    <h2>Upload today's files</h2>
-    <div id="drop">Drop the RTO “reportTable” .xlsx files here, or click to choose (select all 5 at once)
+    <h2>Upload latest files</h2>
+    <div id="drop">Drop RTO report files here (single-RTO files, or a combined workbook with one sheet per RTO), or click to choose
       <input type="file" id="file" accept=".xlsx,.xls,.csv" multiple hidden>
     </div>
     <div id="msg"></div>
@@ -84,23 +84,61 @@ const short=n=>n.replace(/\(UNIT OF EICHER LTD\)/,'').replace(/\(IMPORTER:.*\)/,
   .replace(/\b(PVT|PRIVATE|LTD|LIMITED|COMPANY|INDIA)\b\.?/g,'').replace(/\s+/g,' ').trim()
   .toLowerCase().replace(/(^|[\s-])\w/g,c=>c.toUpperCase()).replace(/\b(Tvs|Bmw|Ola|Klb|Rgm)\b/g,m=>m.toUpperCase());
 
-/* ---------- parse one report ---------- */
-function parseSheet(rows){
-  const title=clean(rows[0] && rows[0][0]);
-  const t=title.match(/of\s+(.+?)\s*-\s*(KL\d+)\s*,.*?\((\d{4})\)/i);
-  if(!t) throw new Error('title row not recognised');
-  const hi=rows.findIndex(r=>r.some(c=>clean(c).toUpperCase()==='JAN'));
-  if(hi<0) throw new Error('month header not found');
-  const cols={};
-  rows[hi].forEach((c,i)=>{const m=MONTHS.indexOf(clean(c).toUpperCase());if(m>=0)cols[m]=i;});
-  const makers={};
-  for(let i=hi+1;i<rows.length;i++){
-    const r=rows[i]; const name=clean(r[1]);
-    if(!name||!clean(r[0])||/^total/i.test(name)) continue;
-    makers[name]=MONTHS.map((_,m)=>cols[m]!=null?num(r[cols[m]]):0);
+/* ---------- parse reports (any layout: several sheets, several dated tables per sheet) ---------- */
+const TITLE_RE=/of\s+(.+?)\s*-\s*(KL\d+)\s*,.*?\((\d{4})\)/i;
+const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function cellDate(c){
+  if(c instanceof Date&&!isNaN(c)) return ymd(new Date(c.getTime()+12*3600e3)); // +12h: SheetJS can land a few seconds before midnight
+  if(typeof c==='string'){const m=c.trim().match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+    if(m){let y=+m[3];if(y<100)y+=2000;const d=new Date(y,+m[2]-1,+m[1]);if(d.getMonth()===+m[2]-1)return ymd(d);}}
+  return null;
+}
+// returns every table found in one sheet: {name,code,year,asof,makers,order}
+function parseSheetBlocks(rows){
+  const hdrs=[];
+  rows.forEach((r,i)=>{if(r.some(c=>clean(c).toUpperCase()==='JAN'))hdrs.push(i)});
+  const blocks=[];let prev=-1;
+  hdrs.forEach(h=>{
+    let title=null,asof=null;
+    for(let i=prev+1;i<h;i++)for(const c of rows[i]){
+      const t=TITLE_RE.exec(clean(c));if(t)title=t;
+      const d=cellDate(c);if(d&&(!asof||d>asof))asof=d;
+    }
+    prev=h;
+    if(!title)return;
+    const cols={};let first=1e9;
+    rows[h].forEach((c,i)=>{const m=MONTHS.indexOf(clean(c).toUpperCase());if(m>=0){cols[m]=i;first=Math.min(first,i)}});
+    const nameCol=first-1,snoCol=first-2;
+    if(nameCol<0)return;
+    const makers={};
+    for(let i=h+1;i<rows.length;i++){
+      const r=rows[i];
+      if(r.some(c=>TITLE_RE.test(clean(c))||cellDate(c)))break;          // next table starts
+      if(snoCol>=0&&clean(r[snoCol]).toLowerCase()==='s no')break;
+      const name=clean(r[nameCol]);
+      if(!name||!/^\d+$/.test(clean(r[snoCol]))||/^total/i.test(name))continue;
+      makers[name]=MONTHS.map((_,m)=>cols[m]!=null?num(r[cols[m]]):0);
+      prev=i;
+    }
+    if(Object.keys(makers).length)blocks.push({name:title[1].trim(),code:title[2].toUpperCase(),year:+title[3],asof,makers});
+  });
+  return blocks;
+}
+// parse a workbook -> best (latest-dated) table per RTO + notes about skipped ones
+function parseWorkbook(wb){
+  const all=[];let n=0;
+  for(const sn of wb.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:'',raw:true});
+    parseSheetBlocks(rows).forEach(b=>all.push({...b,order:n++,sheet:sn}));
   }
-  if(!Object.keys(makers).length) throw new Error('no manufacturer rows');
-  return {name:t[1].trim(),code:t[2].toUpperCase(),year:+t[3],makers};
+  const best={},skipped={};
+  for(const b of all){
+    const cur=best[b.code];
+    const newer=!cur||(b.asof||'')>(cur.asof||'')||((b.asof||'')===(cur.asof||'')&&b.order>cur.order);
+    if(newer){if(cur)(skipped[b.code]=skipped[b.code]||[]).push(cur.asof);best[b.code]=b}
+    else (skipped[b.code]=skipped[b.code]||[]).push(b.asof);
+  }
+  return {best,skipped};
 }
 
 /* ---------- storage ---------- */
@@ -110,22 +148,28 @@ async function loadInitial(){
   try{const r=await fetch('data/data.json',{cache:'no-store'});if(r.ok)seed=await r.json();}catch(e){}
   let local={rtos:{}};
   try{local=JSON.parse(localStorage.getItem(LS)||'{"rtos":{}}')}catch(e){}
-  db={rtos:{...seed.rtos}};
+  db={rtos:{...seed.rtos}};for(const v of Object.values(db.rtos))if(!v.asof)v.asof=(v.uploaded||'').slice(0,10);
   for(const [k,v] of Object.entries(local.rtos||{})){
-    if(!db.rtos[k]||new Date(v.uploaded)>=new Date(db.rtos[k].uploaded)) db.rtos[k]=v;
+    const e=db.rtos[k];if(!v.asof)v.asof=(v.uploaded||'').slice(0,10);if(!e||v.asof>e.asof||(v.asof===e.asof&&new Date(v.uploaded)>=new Date(e.uploaded)))db.rtos[k]=v;
   }
 }
 
 /* ---------- upload ---------- */
 async function handleFiles(files){
-  const out=[];
+  const out=[],today=ymd(new Date()),dl=d=>d?new Date(d+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'no date';
   for(const f of files){
     try{
-      const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
-      const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
-      const p=parseSheet(rows);
-      db.rtos[p.code]={...p,uploaded:new Date().toISOString()};
-      out.push(`<div class="ok">✓ ${p.name} (${p.code}) – ${Object.keys(p.makers).length} manufacturers</div>`);
+      const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
+      const {best,skipped}=parseWorkbook(wb);
+      const codes=Object.keys(best);
+      if(!codes.length)throw new Error('no RTO report table found');
+      for(const code of codes){
+        const p=best[code],asof=p.asof||today,ex=db.rtos[code];
+        const note=(skipped[code]||[]).length?` <span class="sub">(older table${skipped[code].length>1?'s':''} ignored: ${skipped[code].map(dl).join(', ')})</span>`:'';
+        if(ex&&ex.asof>asof){out.push(`<div class="err">– ${p.name} (${code}): file dated ${dl(asof)} is older than loaded data (${dl(ex.asof)}) – kept the newer data</div>`);continue}
+        db.rtos[code]={name:p.name,code,year:p.year,asof,uploaded:new Date().toISOString(),makers:p.makers};
+        out.push(`<div class="ok">✓ ${p.name} (${code}) – data dated ${dl(asof)} – ${Object.keys(p.makers).length} manufacturers${note}</div>`);
+      }
     }catch(e){out.push(`<div class="err">✗ ${f.name}: ${e.message}</div>`);}
   }
   $('msg').innerHTML=out.join('');
@@ -134,13 +178,10 @@ async function handleFiles(files){
 
 /* ---------- aggregation ---------- */
 const rtoList=()=>Object.values(db.rtos).sort((a,b)=>a.code.localeCompare(b.code));
+const latestAsof=()=>rtoList().map(r=>r.asof).sort().pop();
 function refMonth(){
-  const rs=rtoList(); const year=Math.max(...rs.map(r=>r.year));
-  const now=new Date();
-  let cur;
-  if(now.getFullYear()===year) cur=now.getMonth();
-  else { cur=11; rs.forEach(r=>{for(let m=11;m>=0;m--){if(Object.values(r.makers).some(v=>v[m])){cur=Math.min(cur,11);break}}}); }
-  return {year,cur};
+  const [y,m]=latestAsof().split('-').map(Number);
+  return {year:y,cur:m-1};
 }
 // units by maker for month m  -> {maker:{code:units}}
 function byMaker(m){
@@ -157,21 +198,21 @@ function monthTotals(m){
 function rtoMonth(m){const o={};for(const r of rtoList())o[r.code]=m<0?0:Object.values(r.makers).reduce((a,v)=>a+(v[m]||0),0);return o}
 const pct=(a,b)=>b?((a-b)/b*100):null;
 // compare daily averages so a part-month is comparable with a full month
-function dayInfo(){const {year,cur}=refMonth();const now=new Date();
-  const dc=(now.getFullYear()===year&&now.getMonth()===cur)?now.getDate():new Date(year,cur+1,0).getDate();
-  const dp=cur>0?new Date(year,cur,0).getDate():30;return {dc,dp}}
+function dayInfo(){const {year,cur}=refMonth();const last=new Date(year,cur+1,0).getDate();
+  const asof=+latestAsof().slice(8);const dc=Math.min(asof,last);
+  const dp=cur>0?new Date(year,cur,0).getDate():31;return {dc,dp}}
 const rr=(a,b)=>{const {dc,dp}=dayInfo();return b?((a/dc)/(b/dp)-1)*100:null};
 const delta=(a,b)=>{const p=rr(a,b);if(p==null)return '<span class="sub">–</span>';return `<span class="${p>=0?'up':'down'}">${p>=0?'▲':'▼'} ${Math.abs(p).toFixed(1)}%</span>`};
 
 /* ---------- render ---------- */
 function render(){
   const rs=rtoList();
-  $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.uploaded).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}<button title="remove" onclick="removeRto('${r.code}')">×</button></span>`).join('')||'<span class="sub">none</span>';
+  $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}<button title="remove" onclick="removeRto('${r.code}')">×</button></span>`).join('')||'<span class="sub">none</span>';
   $('dlReport').disabled=$('dlData').disabled=!rs.length;
   if(!rs.length){$('dash').innerHTML='<div class="empty">Upload the RTO files to see the dashboard.</div>';$('asof').textContent='No data loaded';return}
   const {year,cur}=refMonth(), prev=cur-1;
-  const latest=new Date(Math.max(...rs.map(r=>+new Date(r.uploaded))));
-  $('asof').textContent=`Data as of ${latest.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})} · ${rs.length} RTO${rs.length>1?'s':''}`;
+  const latest=new Date(latestAsof()+'T00:00');
+  $('asof').textContent=`Data as of ${latest.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${rs.length} RTO${rs.length>1?'s':''}`;
   const curL=`${MFULL[cur]} ${year} (till date)`, prevL=prev>=0?`${MFULL[prev]} ${year}`:'–';
   const mc=monthTotals(cur), mp=monthTotals(prev), rc=rtoMonth(cur), rp=rtoMonth(prev);
   const tc=sumObj(mc), tp=sumObj(mp);
