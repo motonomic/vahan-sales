@@ -52,21 +52,21 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
   </div>
   <div class="actions">
     <button class="btn" id="dlReport" disabled>⬇ Download report (.xlsx)</button>
-    <span class="sub" id="who"></span><button class="btn ghost" id="signout" hidden>Sign out</button>
+    <span class="sub" id="who"></span><button class="btn ghost" id="signin">Sign in</button><button class="btn ghost" id="signout" hidden>Sign out</button>
   </div>
 </header>
 <main>
-  <div class="card" id="login" hidden style="max-width:380px;margin:60px auto">
+  <div class="card" id="login" hidden style="max-width:380px;margin:16px auto">
     <h2>Sign in</h2>
     <form id="loginForm">
       <label class="sub">Email</label><br><input id="email" type="email" required autocomplete="username" style="width:100%;padding:8px;margin:4px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"><br>
       <label class="sub">Password</label><br><input id="pass" type="password" required autocomplete="current-password" style="width:100%;padding:8px;margin:4px 0 12px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"><br>
-      <button class="btn" type="submit" id="loginBtn">Sign in</button>
+      <button class="btn" type="submit" id="loginBtn">Sign in</button> <button class="btn ghost" type="button" id="loginCancel">Cancel</button>
       <div id="loginMsg" class="err" style="margin-top:10px;color:var(--down)"></div>
     </form>
   </div>
 
-  <div id="app" hidden>
+  <div id="app">
     <div class="card" id="uploadCard" hidden>
       <h2>Upload latest files</h2>
       <div id="drop">Drop RTO report files here (single-RTO files, or a combined workbook with one sheet per RTO), or click to choose
@@ -88,7 +88,7 @@ const MFULL=['January','February','March','April','May','June','July','August','
 const SB_URL='https://vjjvrnpmfwjxkkrltefh.supabase.co';
 const SB_KEY='sb_publishable_VzVuDeRk6repPp8Qj1LZKw_IaebK0z5'; // publishable key: safe in browser code; access is enforced by database rules
 const sb=supabase.createClient(SB_URL,SB_KEY);
-let canUpload=false;
+let canUpload=false, user=null;
 let db={rtos:{}}, chart=null, topN=5;
 
 const $=id=>document.getElementById(id);
@@ -223,7 +223,7 @@ const delta=(a,b)=>{const p=rr(a,b);if(p==null)return '<span class="sub">–</sp
 function render(){
   const rs=rtoList();
   $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>`).join('')||'<span class="sub">none</span>';
-  $('dlReport').disabled=!rs.length;
+  $('dlReport').disabled=!rs.length||!user;$('dlReport').title=user?'':'Sign in to download the report';
   if(!rs.length){$('dash').innerHTML=`<div class="empty">No data yet.${canUpload?' Upload the RTO report files above.':' Ask an uploader to add the latest files.'}</div>`;$('asof').textContent='No data loaded';return}
   const {year,cur}=refMonth(), prev=cur-1;
   const latest=new Date(latestAsof()+'T00:00');
@@ -234,6 +234,10 @@ function render(){
   const makers=[...new Set([...Object.keys(mc),...Object.keys(mp)])].sort((a,b)=>(mc[b]||0)-(mc[a]||0)||(mp[b]||0)-(mp[a]||0));
   const topC=makers[0], topR=Object.entries(rc).sort((a,b)=>b[1]-a[1])[0];
   const nameOf=c=>db.rtos[c].name;
+  const bm=byMaker(cur), bk=Object.keys(bm).sort((a,b)=>sumObj(bm[b])-sumObj(bm[a]));
+  const mxrHead=rs.map(r=>`<th title="${r.name} (${r.code})">${r.name.replace(/\s+S?RTO$/i,'')}</th>`).join('');
+  const mxrRows=bk.map(k=>`<tr><td>${short(k)}</td>${rs.map(r=>`<td>${fmt(bm[k][r.code]||0)}</td>`).join('')}<td><b>${fmt(sumObj(bm[k]))}</b></td></tr>`).join('');
+  const mxrFoot=`<tr><td>TOTAL</td>${rs.map(r=>`<td>${fmt(bk.reduce((a,k)=>a+(bm[k][r.code]||0),0))}</td>`).join('')}<td>${fmt(bk.reduce((a,k)=>a+sumObj(bm[k]),0))}</td></tr>`;
 
   const rtoRows=rs.map(r=>`<tr><td>${r.name}</td><td>${fmt(rc[r.code])}</td><td>${fmt(rp[r.code])}</td><td>${delta(rc[r.code],rp[r.code])}</td></tr>`).join('');
   const mkRows=makers.map(k=>`<tr><td>${short(k)}</td><td>${fmt(mc[k]||0)}</td><td>${fmt(mp[k]||0)}</td><td>${delta(mc[k]||0,mp[k]||0)}</td></tr>`).join('');
@@ -244,6 +248,10 @@ function render(){
     <div class="kpi"><div class="l">${prevL}</div><div class="v">${fmt(tp)}</div><div class="d">${delta(tc,tp)} <span class="sub">daily average vs previous month</span></div></div>
     <div class="kpi"><div class="l">Top maker (${MONTHS[cur]})</div><div class="v" style="font-size:20px">${topC?short(topC):'–'}</div><div class="d sub">${topC?fmt(mc[topC])+' units · '+(tc?(mc[topC]/tc*100).toFixed(1):0)+'%':''}</div></div>
     <div class="kpi"><div class="l">Top RTO (${MONTHS[cur]})</div><div class="v" style="font-size:20px">${topR?nameOf(topR[0]):'–'}</div><div class="d sub">${topR?fmt(topR[1])+' units':''}</div></div>
+  </div>
+  <div class="card">
+    <h2>${MFULL[cur]} ${year} (till date) – manufacturer × RTO</h2>
+    <div class="scroll" style="max-height:560px"><table id="mxr"><thead><tr><th>Manufacturer</th>${mxrHead}<th>Total</th></tr></thead><tbody>${mxrRows}</tbody><tfoot>${mxrFoot}</tfoot></table></div>
   </div>
   <div class="card">
     <h2>Top makers – monthly trend (${year})</h2>
@@ -288,6 +296,7 @@ function drawChart(){
 
 /* ---------- report download ---------- */
 function downloadReport(){
+  if(!user)return;
   const {year,cur}=refMonth(),prev=cur-1,rs=rtoList();
   const wb=XLSX.utils.book_new();
   const add=(name,aoa,w)=>{const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=w.map(x=>({wch:x}));XLSX.utils.book_append_sheet(wb,ws,name)};
@@ -341,33 +350,37 @@ fi.onchange=()=>{handleFiles([...fi.files]);fi.value=''};
 drop.addEventListener('drop',ev=>handleFiles([...ev.dataTransfer.files]));
 $('dlReport').onclick=downloadReport;
 
-/* ---------- sign-in ---------- */
-function showLogin(msg){
-  $('app').hidden=true;$('login').hidden=false;$('signout').hidden=true;$('who').textContent='';
-  $('asof').textContent='Please sign in';$('loginMsg').textContent=msg||'';
+/* ---------- sign-in (optional: needed only to download / upload) ---------- */
+function setUser(session){
+  user=session?session.user:null;
+  $('signin').hidden=!!user;$('signout').hidden=!user;
+  $('who').textContent=user?user.email:'';
+  if(user)$('login').hidden=true;
 }
-async function start(session){
-  $('login').hidden=true;$('app').hidden=false;$('signout').hidden=false;
-  $('who').textContent=session.user.email;
+async function refresh(){
   try{
-    const {data,error}=await sb.from('uploaders').select('user_id').eq('user_id',session.user.id);
-    canUpload=!error&&data.length>0;
+    if(user){
+      const {data,error}=await sb.from('uploaders').select('user_id').eq('user_id',user.id);
+      canUpload=!error&&data.length>0;
+    }else canUpload=false;
     $('uploadCard').hidden=!canUpload;
     await loadFromDb();
   }catch(e){$('dash').innerHTML=`<div class="empty err">Could not load data: ${e.message}</div>`;return}
   render();
 }
+$('signin').onclick=()=>{$('login').hidden=false;$('email').focus()};
+$('loginCancel').onclick=()=>{$('login').hidden=true;$('loginMsg').textContent=''};
 $('loginForm').onsubmit=async ev=>{
   ev.preventDefault();$('loginBtn').disabled=true;$('loginMsg').textContent='';
   const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('pass').value});
   $('loginBtn').disabled=false;
   if(error){$('loginMsg').textContent=error.message;return}
-  $('pass').value='';start(data.session);
+  $('pass').value='';setUser(data.session);refresh();
 };
-$('signout').onclick=async()=>{await sb.auth.signOut();db={rtos:{}};canUpload=false;showLogin()};
+$('signout').onclick=async()=>{await sb.auth.signOut();setUser(null);refresh()};
 (async()=>{
   const {data}=await sb.auth.getSession();
-  if(data.session)start(data.session);else showLogin();
+  setUser(data.session);refresh();
 })();
 </script>
 </body>
