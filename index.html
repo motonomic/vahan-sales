@@ -42,6 +42,12 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
 .chip{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 10px;margin:2px;font-size:12px}
 .chip button{border:0;background:none;color:var(--mute);cursor:pointer;font-size:14px;padding:0}
 .empty{padding:40px;text-align:center;color:var(--mute)}
+.scope{display:flex;gap:10px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+.scope select{font-size:15px;font-weight:600;padding:8px 10px;min-width:260px;max-width:100%}
+.sect{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:20px 0 10px}
+.tag{font-size:11px;color:var(--mute);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:6px}
+a.dl{color:var(--acc);cursor:pointer;text-decoration:none}a.dl:hover{text-decoration:underline}
+th.l,td.l{text-align:left}
 </style>
 </head>
 <body>
@@ -56,6 +62,9 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
   </div>
 </header>
 <main>
+  <div class="card scope" id="scopeBar"><label for="scope"><b>View sales for</b></label>
+    <select id="scope"><option value="ALL">Kerala – all RTOs</option></select>
+    <span class="sub">Pick a main RTO to see it together with its SRTOs.</span></div>
   <div class="card" id="login" hidden style="max-width:380px;margin:16px auto">
     <h2>Sign in</h2>
     <form id="loginForm">
@@ -75,6 +84,8 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
       <div id="msg"></div>
     </div>
     <div class="sub" style="margin:0 0 12px">Loaded RTOs: <span id="chips"></span></div>
+    <div id="hist"></div>
+    <h2 class="sect" id="liveHead"></h2>
     <div id="dash"></div>
   </div>
 </main>
@@ -88,7 +99,7 @@ const MFULL=['January','February','March','April','May','June','July','August','
 const SB_URL='https://vjjvrnpmfwjxkkrltefh.supabase.co';
 const SB_KEY='sb_publishable_VzVuDeRk6repPp8Qj1LZKw_IaebK0z5'; // publishable key: safe in browser code; access is enforced by database rules
 const sb=supabase.createClient(SB_URL,SB_KEY);
-let canUpload=false, user=null;
+let canUpload=false, user=null, H=null, scope='ALL', topNh=5, chartH=null;
 let db={rtos:{}}, chart=null, topN=5;
 
 const $=id=>document.getElementById(id);
@@ -192,8 +203,10 @@ async function handleFiles(files){
 }
 
 /* ---------- aggregation ---------- */
-const rtoList=()=>Object.values(db.rtos).sort((a,b)=>a.code.localeCompare(b.code));
-const latestAsof=()=>rtoList().map(r=>r.asof).sort().pop();
+const allRtos=()=>Object.values(db.rtos).sort((a,b)=>a.code.localeCompare(b.code));
+const codeDist=()=>H?Object.fromEntries(H.offices.map(o=>[o.c,o.d])):{};
+const rtoList=()=>{const cd=codeDist();return allRtos().filter(r=>scope==='ALL'||cd[r.code]===scope)};
+const latestAsof=()=>allRtos().map(r=>r.asof).sort().pop();
 function refMonth(){
   const [y,m]=latestAsof().split('-').map(Number);
   return {year:y,cur:m-1};
@@ -221,13 +234,16 @@ const delta=(a,b)=>{const p=rr(a,b);if(p==null)return '<span class="sub">–</sp
 
 /* ---------- render ---------- */
 function render(){
-  const rs=rtoList();
-  $('chips').innerHTML=rs.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>`).join('')||'<span class="sub">none</span>';
+  renderHist();
+  const rs=rtoList(), all=allRtos();
+  $('chips').innerHTML=all.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>`).join('')||'<span class="sub">none</span>';
   $('dlReport').disabled=!rs.length||!user;$('dlReport').title=user?'':'Sign in to download the report';
-  if(!rs.length){$('dash').innerHTML=`<div class="empty">No data yet.${canUpload?' Upload the RTO report files above.':' Ask an uploader to add the latest files.'}</div>`;$('asof').textContent='No data loaded';return}
+  $('liveHead').textContent=`2026 monthly data – ${scopeLabel()}`;
+  if(all.length)$('asof').textContent=`2026 data as of ${new Date(latestAsof()+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${all.length} RTO${all.length>1?'s':''} uploaded`;
+  else $('asof').textContent='No 2026 monthly data loaded';
+  if(!rs.length){$('dash').innerHTML=`<div class="empty">${all.length?`No 2026 monthly data has been uploaded for ${scopeLabel()} yet.`:`No 2026 monthly data yet.${canUpload?' Upload the RTO report files above.':' Ask an uploader to add the latest files.'}`}</div>`;return}
   const {year,cur}=refMonth(), prev=cur-1;
   const latest=new Date(latestAsof()+'T00:00');
-  $('asof').textContent=`Data as of ${latest.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${rs.length} RTO${rs.length>1?'s':''}`;
   const curL=`${MFULL[cur]} ${year} (till date)`, prevL=prev>=0?`${MFULL[prev]} ${year}`:'–';
   const mc=monthTotals(cur), mp=monthTotals(prev), rc=rtoMonth(cur), rp=rtoMonth(prev);
   const tc=sumObj(mc), tp=sumObj(mp);
@@ -293,6 +309,110 @@ function drawChart(){
     scales:{x:{ticks:{color:tick},grid:{color:grid}},y:{beginAtZero:true,ticks:{color:tick,callback:v=>fmt(v)},grid:{color:grid},title:{display:true,text:'Registrations',color:tick}}}}});
 }
 
+
+/* ---------- Kerala 2021-2025 history + view selector ---------- */
+const slug=x=>x.toLowerCase().replace(/[^a-z]+/g,'');
+const scopeLabel=()=>scope==='ALL'||!H?'Kerala':H.dmeta[scope].label;
+const sumA=a=>a.reduce((x,y)=>x+y,0);
+const pchg=(a,b)=>{const p=pct(a,b);return p==null?'<span class="sub">–</span>':`<span class="${p>=0?'up':'down'}">${p>=0?'▲':'▼'} ${Math.abs(p).toFixed(1)}%</span>`};
+async function loadHist(){
+  try{const r=await fetch('data/kerala_2021_2025.json');if(!r.ok)throw new Error('HTTP '+r.status);H=await r.json()}
+  catch(e){$('hist').innerHTML=`<div class="card empty">Could not load 2021–2025 data (${e.message}).</div>`;return}
+  H.districts=[...new Set(H.offices.map(o=>o.d))].sort();H.dmeta={};
+  for(const d of H.districts){
+    const rt=H.offices.filter(o=>o.d===d&&o.t==='RTO').sort((a,b)=>a.c.localeCompare(b.c));
+    H.dmeta[d]={label:rt.length>1?`${d} (incl. ${rt.slice(1).map(o=>o.n).join(', ')})`:d};
+  }
+  $('scope').innerHTML='<option value="ALL">Kerala – all RTOs</option>'+H.districts.map(d=>`<option value="${d}">${H.dmeta[d].label}</option>`).join('');
+  const hit=H.districts.find(d=>slug(d)===slug(decodeURIComponent(location.hash.slice(1))));
+  scope=hit||'ALL';$('scope').value=scope;
+  render();
+}
+function pickScope(d){
+  scope=d;$('scope').value=d;
+  history.replaceState(null,'',d==='ALL'?location.pathname+location.search:'#'+slug(d));
+  render();window.scrollTo({top:0,behavior:'smooth'});
+}
+$('scope').onchange=e=>pickScope(e.target.value);
+window.addEventListener('hashchange',()=>{if(!H)return;const d=H.districts.find(x=>slug(x)===slug(decodeURIComponent(location.hash.slice(1))));const t=d||'ALL';if(t!==scope){scope=t;$('scope').value=t;render()}});
+function liveYtd(code){const r=db.rtos[code];return r?sumA(Object.values(r.makers).map(sumA)):null}
+function histData(){
+  const offs=H.offices.filter(o=>scope==='ALL'||o.d===scope), n=H.years.length;
+  const tot=Array(n).fill(0), mk={};
+  const offT=o=>H.years.map((_,i)=>Object.values(o.m).reduce((a,v)=>a+v[i],0));
+  offs.forEach(o=>{for(const [ix,v] of Object.entries(o.m)){const k=H.makers[+ix];const a=mk[k]=mk[k]||Array(n).fill(0);v.forEach((x,i)=>{a[i]+=x;tot[i]+=x})}});
+  const mkeys=Object.keys(mk).sort((a,b)=>sumA(mk[b])-sumA(mk[a]));
+  return {offs,tot,mk,mkeys,offT,n};
+}
+function renderHist(){
+  if(!H)return;
+  const {offs,tot,mk,mkeys,offT,n}=histData(), L=n-1, ys=H.years;
+  const topL=[...mkeys].sort((a,b)=>mk[b][L]-mk[a][L])[0];
+  const liveN=offs.filter(o=>liveYtd(o.c)!=null).length;
+  const liveDate=liveN?new Date(latestAsof()+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'}):'';
+  let table;
+  if(scope==='ALL'){
+    const rows=H.districts.map(d=>{const os=H.offices.filter(o=>o.d===d);const t=ys.map((_,i)=>sumA(os.map(o=>offT(o)[i])));
+      const lv=os.map(o=>liveYtd(o.c));return {d,os,t,live:lv.every(x=>x!=null)?sumA(lv):null,partial:lv.some(x=>x!=null)&&!lv.every(x=>x!=null)}});
+    rows.sort((a,b)=>b.t[L]-a.t[L]);
+    table=`<table><thead><tr><th class="l">Main RTO / district</th><th>Offices</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th title="2026 year to date, only where monthly data is uploaded">2026 YTD</th></tr></thead><tbody>`+
+      rows.map(r=>`<tr><td class="l"><a class="dl" onclick="pickScope('${r.d}')">${H.dmeta[r.d].label}</a></td><td>${r.os.length}</td>${r.t.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(r.t[L],r.t[L-1])}</td><td>${r.live!=null?fmt(r.live):r.partial?'partial':'<span class="sub">–</span>'}</td></tr>`).join('')+
+      `</tbody><tfoot><tr><td class="l">Kerala total</td><td>${offs.length}</td>${tot.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(tot[L],tot[L-1])}</td><td></td></tr></tfoot></table>`;
+  }else{
+    const rt=offs.filter(o=>o.t==='RTO').sort((a,b)=>a.c.localeCompare(b.c));
+    const sr=offs.filter(o=>o.t==='SRTO').sort((a,b)=>offT(b)[L]-offT(a)[L]);
+    const row=o=>{const t=offT(o),lv=liveYtd(o.c);return `<tr><td class="l">${o.n}<span class="tag">${o.t}</span> <span class="sub">${o.c}</span></td>${t.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(t[L],t[L-1])}</td><td>${lv!=null?fmt(lv):'<span class="sub">–</span>'}</td></tr>`};
+    const lvAll=offs.map(o=>liveYtd(o.c));
+    table=`<table><thead><tr><th class="l">Office</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th title="2026 year to date, only where monthly data is uploaded">2026 YTD</th></tr></thead><tbody>${[...rt,...sr].map(row).join('')}</tbody>
+      <tfoot><tr><td class="l">${scopeLabel()} – total</td>${tot.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(tot[L],tot[L-1])}</td><td>${lvAll.every(x=>x!=null)?fmt(sumA(lvAll)):'<span class="sub">–</span>'}</td></tr></tfoot></table>`;
+  }
+  const mrows=mkeys.map(k=>`<tr><td class="l">${short(k)}</td>${mk[k].map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(mk[k][L],mk[k][L-1])}</td><td><b>${fmt(sumA(mk[k]))}</b></td></tr>`).join('');
+  if(chartH){chartH.destroy();chartH=null}
+  $('hist').innerHTML=`
+  <div class="row" style="justify-content:space-between"><h2 class="sect" style="margin:0">${ys[0]}–${ys[L]} sales – ${scopeLabel()}</h2>
+    <button class="btn ghost" id="dlHist" ${user?'':'disabled'} title="${user?'':'Sign in to download'}">⬇ Download this view (.xlsx)</button></div>
+  <div class="kpis" style="margin-top:10px">
+    <div class="kpi"><div class="l">${ys[L]} total</div><div class="v">${fmt(tot[L])}</div><div class="d">${pchg(tot[L],tot[L-1])} <span class="sub">vs ${ys[L-1]} (${fmt(tot[L-1])})</span></div></div>
+    <div class="kpi"><div class="l">${ys[0]}–${ys[L]} total</div><div class="v">${fmt(sumA(tot))}</div><div class="d sub">${offs.length} office${offs.length>1?'s':''}</div></div>
+    <div class="kpi"><div class="l">Top maker ${ys[L]}</div><div class="v" style="font-size:20px">${topL?short(topL):'–'}</div><div class="d sub">${topL?fmt(mk[topL][L])+' units · '+(tot[L]?(mk[topL][L]/tot[L]*100).toFixed(1):0)+'%':''}</div></div>
+    <div class="kpi"><div class="l">Best year</div><div class="v">${ys[tot.indexOf(Math.max(...tot))]}</div><div class="d sub">${fmt(Math.max(...tot))} units</div></div>
+  </div>
+  <div class="card"><h2>${scope==='ALL'?'Sales by main RTO (district) – click a name to open it':'Sales by office – main RTO first, then its SRTOs'}</h2><div class="scroll" style="max-height:600px">${table}</div>
+    <div class="sub" style="margin-top:6px">${liveN?`2026 YTD is shown only where monthly data is uploaded (${liveN} of ${offs.length} offices, as of ${liveDate}); it is a part-year figure.`:'2026 monthly data has not been uploaded for these offices.'}</div></div>
+  <div class="grid2">
+    <div class="card"><h2>Top makers – yearly trend</h2>
+      <div class="row"><label>Show top <select id="topNh">${[3,5,8,10].map(x=>`<option ${x===topNh?'selected':''}>${x}</option>`).join('')}</select></label></div>
+      <div class="chartbox" style="height:320px"><canvas id="cvh"></canvas></div></div>
+    <div class="card"><h2>Sales by manufacturer</h2><div class="scroll" style="max-height:370px"><table>
+      <thead><tr><th class="l">Manufacturer</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th>Total</th></tr></thead><tbody>${mrows}</tbody></table></div></div>
+  </div>`;
+  $('topNh').onchange=e=>{topNh=+e.target.value;drawHistChart()};
+  $('dlHist').onclick=downloadHist;
+  drawHistChart();
+}
+function drawHistChart(){
+  const {mk,mkeys}=histData(), ys=H.years;
+  const dark=matchMedia('(prefers-color-scheme:dark)').matches, tick=dark?'#9aa3b5':'#6b7385', grid=dark?'#2a3140':'#e3e6ec';
+  if(chartH)chartH.destroy();
+  chartH=new Chart($('cvh'),{type:'line',data:{labels:ys,datasets:mkeys.slice(0,topNh).map((k,i)=>({label:short(k),data:mk[k],borderColor:PAL[i%PAL.length],backgroundColor:PAL[i%PAL.length],tension:.25,pointRadius:3,borderWidth:2}))},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{position:'bottom',labels:{color:tick,usePointStyle:true}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fmt(c.parsed.y)}`}}},
+      scales:{x:{ticks:{color:tick},grid:{color:grid}},y:{beginAtZero:true,ticks:{color:tick,callback:v=>fmt(v)},grid:{color:grid},title:{display:true,text:'Registrations',color:tick}}}}});
+}
+function downloadHist(){
+  if(!user||!H)return;
+  const {offs,tot,mk,mkeys,offT}=histData(), ys=H.years, wb=XLSX.utils.book_new();
+  const add=(name,aoa,w)=>{const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=w.map(x=>({wch:x}));XLSX.utils.book_append_sheet(wb,ws,name)};
+  const o=[[`${ys[0]}–${ys[ys.length-1]} sales – ${scopeLabel()}`],[],['Code','Office','Type','District',...ys,'Total']];
+  [...offs].sort((a,b)=>a.d.localeCompare(b.d)||(a.t===b.t?a.c.localeCompare(b.c):a.t==='RTO'?-1:1)).forEach(x=>{const t=offT(x);o.push([x.c,x.n,x.t,x.d,...t,sumA(t)])});
+  o.push(['','TOTAL','','',...tot,sumA(tot)]);add('Offices',o,[8,24,7,20,...ys.map(()=>10),12]);
+  const m=[[`Manufacturers – ${scopeLabel()}`],[],['Manufacturer',...ys,'Total']];
+  mkeys.forEach(k=>m.push([k,...mk[k],sumA(mk[k])]));m.push(['TOTAL',...tot,sumA(tot)]);add('Manufacturers',m,[46,...ys.map(()=>10),12]);
+  if(scope==='ALL'){const d=[['Main RTO / district','Offices',...ys,'Total']];
+    H.districts.forEach(x=>{const os=H.offices.filter(q=>q.d===x),t=ys.map((_,i)=>sumA(os.map(q=>offT(q)[i])));d.push([x,os.length,...t,sumA(t)])});add('Districts',d,[24,9,...ys.map(()=>10),12])}
+  const dd=new Date(),p=n=>String(n).padStart(2,'0');
+  XLSX.writeFile(wb,`Kerala_Sales_${scope==='ALL'?'Kerala':slug(scope)}_${ys[0]}-${ys[ys.length-1]}_${dd.getFullYear()}${p(dd.getMonth()+1)}${p(dd.getDate())}.xlsx`);
+}
 
 /* ---------- report download ---------- */
 function downloadReport(){
@@ -378,6 +498,7 @@ $('loginForm').onsubmit=async ev=>{
   $('pass').value='';setUser(data.session);refresh();
 };
 $('signout').onclick=async()=>{await sb.auth.signOut();setUser(null);refresh()};
+loadHist();
 (async()=>{
   const {data}=await sb.auth.getSession();
   setUser(data.session);refresh();
