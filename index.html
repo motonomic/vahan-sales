@@ -204,7 +204,7 @@ async function handleFiles(files){
 
 /* ---------- aggregation ---------- */
 const allRtos=()=>Object.values(db.rtos).sort((a,b)=>a.code.localeCompare(b.code));
-const codeDist=()=>H?Object.fromEntries(H.offices.map(o=>[o.c,o.d])):{};
+const codeDist=()=>H?Object.fromEntries(H.offices.map(o=>[o.c,o.p])):{};
 const rtoList=()=>{const cd=codeDist();return allRtos().filter(r=>scope==='ALL'||cd[r.code]===scope)};
 const latestAsof=()=>allRtos().map(r=>r.asof).sort().pop();
 function refMonth(){
@@ -318,26 +318,24 @@ const pchg=(a,b)=>{const p=pct(a,b);return p==null?'<span class="sub">–</span>
 async function loadHist(){
   try{const r=await fetch('data/kerala_2021_2025.json');if(!r.ok)throw new Error('HTTP '+r.status);H=await r.json()}
   catch(e){$('hist').innerHTML=`<div class="card empty">Could not load 2021–2025 data (${e.message}).</div>`;return}
-  H.districts=[...new Set(H.offices.map(o=>o.d))].sort();H.dmeta={};
-  for(const d of H.districts){
-    const rt=H.offices.filter(o=>o.d===d&&o.t==='RTO').sort((a,b)=>a.c.localeCompare(b.c));
-    H.dmeta[d]={label:rt.length>1?`${d} (incl. ${rt.slice(1).map(o=>o.n).join(', ')})`:d};
-  }
+  H.byCode=Object.fromEntries(H.offices.map(o=>[o.c,o]));
+  H.districts=[...new Set(H.offices.map(o=>o.p))].sort((a,b)=>H.byCode[a].n.localeCompare(H.byCode[b].n));H.dmeta={};
+  for(const c of H.districts)H.dmeta[c]={label:H.byCode[c].n};
   $('scope').innerHTML='<option value="ALL">Kerala – all RTOs</option>'+H.districts.map(d=>`<option value="${d}">${H.dmeta[d].label}</option>`).join('');
-  const hit=H.districts.find(d=>slug(d)===slug(decodeURIComponent(location.hash.slice(1))));
+  const hit=H.districts.find(c=>slug(H.byCode[c].n)===slug(decodeURIComponent(location.hash.slice(1))));
   scope=hit||'ALL';$('scope').value=scope;
   render();
 }
 function pickScope(d){
   scope=d;$('scope').value=d;
-  history.replaceState(null,'',d==='ALL'?location.pathname+location.search:'#'+slug(d));
+  history.replaceState(null,'',d==='ALL'?location.pathname+location.search:'#'+slug(H.byCode[d].n));
   render();window.scrollTo({top:0,behavior:'smooth'});
 }
 $('scope').onchange=e=>pickScope(e.target.value);
-window.addEventListener('hashchange',()=>{if(!H)return;const d=H.districts.find(x=>slug(x)===slug(decodeURIComponent(location.hash.slice(1))));const t=d||'ALL';if(t!==scope){scope=t;$('scope').value=t;render()}});
+window.addEventListener('hashchange',()=>{if(!H)return;const d=H.districts.find(x=>slug(H.byCode[x].n)===slug(decodeURIComponent(location.hash.slice(1))));const t=d||'ALL';if(t!==scope){scope=t;$('scope').value=t;render()}});
 function liveYtd(code){const r=db.rtos[code];return r?sumA(Object.values(r.makers).map(sumA)):null}
 function histData(){
-  const offs=H.offices.filter(o=>scope==='ALL'||o.d===scope), n=H.years.length;
+  const offs=H.offices.filter(o=>scope==='ALL'||o.p===scope), n=H.years.length;
   const tot=Array(n).fill(0), mk={};
   const offT=o=>H.years.map((_,i)=>Object.values(o.m).reduce((a,v)=>a+v[i],0));
   offs.forEach(o=>{for(const [ix,v] of Object.entries(o.m)){const k=H.makers[+ix];const a=mk[k]=mk[k]||Array(n).fill(0);v.forEach((x,i)=>{a[i]+=x;tot[i]+=x})}});
@@ -352,10 +350,10 @@ function renderHist(){
   const liveDate=liveN?new Date(latestAsof()+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'}):'';
   let table;
   if(scope==='ALL'){
-    const rows=H.districts.map(d=>{const os=H.offices.filter(o=>o.d===d);const t=ys.map((_,i)=>sumA(os.map(o=>offT(o)[i])));
+    const rows=H.districts.map(d=>{const os=H.offices.filter(o=>o.p===d);const t=ys.map((_,i)=>sumA(os.map(o=>offT(o)[i])));
       const lv=os.map(o=>liveYtd(o.c));return {d,os,t,live:lv.every(x=>x!=null)?sumA(lv):null,partial:lv.some(x=>x!=null)&&!lv.every(x=>x!=null)}});
     rows.sort((a,b)=>b.t[L]-a.t[L]);
-    table=`<table><thead><tr><th class="l">Main RTO / district</th><th>Offices</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th title="2026 year to date, only where monthly data is uploaded">2026 YTD</th></tr></thead><tbody>`+
+    table=`<table><thead><tr><th class="l">Main RTO</th><th>Offices</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th title="2026 year to date, only where monthly data is uploaded">2026 YTD</th></tr></thead><tbody>`+
       rows.map(r=>`<tr><td class="l"><a class="dl" onclick="pickScope('${r.d}')">${H.dmeta[r.d].label}</a></td><td>${r.os.length}</td>${r.t.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(r.t[L],r.t[L-1])}</td><td>${r.live!=null?fmt(r.live):r.partial?'partial':'<span class="sub">–</span>'}</td></tr>`).join('')+
       `</tbody><tfoot><tr><td class="l">Kerala total</td><td>${offs.length}</td>${tot.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(tot[L],tot[L-1])}</td><td></td></tr></tfoot></table>`;
   }else{
@@ -377,7 +375,8 @@ function renderHist(){
     <div class="kpi"><div class="l">Top maker ${ys[L]}</div><div class="v" style="font-size:20px">${topL?short(topL):'–'}</div><div class="d sub">${topL?fmt(mk[topL][L])+' units · '+(tot[L]?(mk[topL][L]/tot[L]*100).toFixed(1):0)+'%':''}</div></div>
     <div class="kpi"><div class="l">Best year</div><div class="v">${ys[tot.indexOf(Math.max(...tot))]}</div><div class="d sub">${fmt(Math.max(...tot))} units</div></div>
   </div>
-  <div class="card"><h2>${scope==='ALL'?'Sales by main RTO (district) – click a name to open it':'Sales by office – main RTO first, then its SRTOs'}</h2><div class="scroll" style="max-height:600px">${table}</div>
+  <div class="card"><h2>${scope==='ALL'?'Sales by main RTO – click a name to open it':'Sales by office – main RTO first, then its SRTOs'}</h2><div class="scroll" style="max-height:600px">${table}</div>
+    ${H.notes&&H.notes[scope]?`<div class="sub" style="margin-top:6px"><b>Note:</b> ${H.notes[scope]}</div>`:''}
     <div class="sub" style="margin-top:6px">${liveN?`2026 YTD is shown only where monthly data is uploaded (${liveN} of ${offs.length} offices, as of ${liveDate}); it is a part-year figure.`:'2026 monthly data has not been uploaded for these offices.'}</div></div>
   <div class="grid2">
     <div class="card"><h2>Top makers – yearly trend</h2>
@@ -403,15 +402,15 @@ function downloadHist(){
   if(!user||!H)return;
   const {offs,tot,mk,mkeys,offT}=histData(), ys=H.years, wb=XLSX.utils.book_new();
   const add=(name,aoa,w)=>{const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=w.map(x=>({wch:x}));XLSX.utils.book_append_sheet(wb,ws,name)};
-  const o=[[`${ys[0]}–${ys[ys.length-1]} sales – ${scopeLabel()}`],[],['Code','Office','Type','District',...ys,'Total']];
-  [...offs].sort((a,b)=>a.d.localeCompare(b.d)||(a.t===b.t?a.c.localeCompare(b.c):a.t==='RTO'?-1:1)).forEach(x=>{const t=offT(x);o.push([x.c,x.n,x.t,x.d,...t,sumA(t)])});
+  const o=[[`${ys[0]}–${ys[ys.length-1]} sales – ${scopeLabel()}`],[],['Code','Office','Type','Main RTO',...ys,'Total']];
+  [...offs].sort((a,b)=>H.byCode[a.p].n.localeCompare(H.byCode[b.p].n)||(a.t===b.t?a.c.localeCompare(b.c):a.t==='RTO'?-1:1)).forEach(x=>{const t=offT(x);o.push([x.c,x.n,x.t,H.byCode[x.p].n,...t,sumA(t)])});
   o.push(['','TOTAL','','',...tot,sumA(tot)]);add('Offices',o,[8,24,7,20,...ys.map(()=>10),12]);
   const m=[[`Manufacturers – ${scopeLabel()}`],[],['Manufacturer',...ys,'Total']];
   mkeys.forEach(k=>m.push([k,...mk[k],sumA(mk[k])]));m.push(['TOTAL',...tot,sumA(tot)]);add('Manufacturers',m,[46,...ys.map(()=>10),12]);
-  if(scope==='ALL'){const d=[['Main RTO / district','Offices',...ys,'Total']];
-    H.districts.forEach(x=>{const os=H.offices.filter(q=>q.d===x),t=ys.map((_,i)=>sumA(os.map(q=>offT(q)[i])));d.push([x,os.length,...t,sumA(t)])});add('Districts',d,[24,9,...ys.map(()=>10),12])}
+  if(scope==='ALL'){const d=[['Main RTO','Offices',...ys,'Total']];
+    H.districts.forEach(x=>{const os=H.offices.filter(q=>q.p===x),t=ys.map((_,i)=>sumA(os.map(q=>offT(q)[i])));d.push([H.byCode[x].n,os.length,...t,sumA(t)])});add('Main RTOs',d,[24,9,...ys.map(()=>10),12])}
   const dd=new Date(),p=n=>String(n).padStart(2,'0');
-  XLSX.writeFile(wb,`Kerala_Sales_${scope==='ALL'?'Kerala':slug(scope)}_${ys[0]}-${ys[ys.length-1]}_${dd.getFullYear()}${p(dd.getMonth()+1)}${p(dd.getDate())}.xlsx`);
+  XLSX.writeFile(wb,`Kerala_Sales_${scope==='ALL'?'Kerala':slug(H.byCode[scope].n)}_${ys[0]}-${ys[ys.length-1]}_${dd.getFullYear()}${p(dd.getMonth()+1)}${p(dd.getDate())}.xlsx`);
 }
 
 /* ---------- report download ---------- */
