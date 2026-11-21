@@ -261,7 +261,8 @@ function render(){
   $('chips').innerHTML=all.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>`).join('')||'<span class="sub">none</span>';
   $('chipsSum').textContent=`Loaded RTOs: ${all.length} (click to list)`;
   $('dlReport').disabled=!rs.length||!user;$('dlReport').title=user?'':'Sign in to download the report';
-  $('liveHead').textContent=`2026 monthly data – ${scopeLabel()}`;
+  const inScope=H?H.offices.filter(o=>scope==='ALL'||o.p===scope).length:rs.length;
+  $('liveHead').innerHTML=`2026 monthly data – ${scopeLabel()} <span style="text-transform:none;letter-spacing:0;${rs.length<inScope?'color:var(--down)':''}">· ${rs.length} of ${inScope} offices uploaded${rs.length<inScope?' (partial – totals cover only these)':''}</span>`;
   if(all.length)$('asof').textContent=`2026 data as of ${new Date(latestAsof()+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${all.length} RTO${all.length>1?'s':''} uploaded`;
   else $('asof').textContent='No 2026 monthly data loaded';
   if(!rs.length){$('dash').innerHTML=`<div class="empty">${all.length?`No 2026 monthly data has been uploaded for ${scopeLabel()} yet.`:`No 2026 monthly data yet.${canUpload?' Upload the RTO report files above.':' Ask an uploader to add the latest files.'}`}</div>`;return}
@@ -273,10 +274,6 @@ function render(){
   const makers=[...new Set([...Object.keys(mc),...Object.keys(mp)])].sort((a,b)=>(mc[b]||0)-(mc[a]||0)||(mp[b]||0)-(mp[a]||0));
   const topC=makers[0], topR=Object.entries(rc).sort((a,b)=>b[1]-a[1])[0];
   const nameOf=c=>db.rtos[c].name;
-  const bm=byMaker(cur), bk=Object.keys(bm).sort((a,b)=>sumObj(bm[b])-sumObj(bm[a]));
-  const mxrHead=rs.map(r=>`<th title="${r.name} (${r.code})">${r.name.replace(/\s+S?RTO$/i,'')}</th>`).join('');
-  const mxrRows=bk.map(k=>`<tr><td>${short(k)}</td>${rs.map(r=>`<td>${fmt(bm[k][r.code]||0)}</td>`).join('')}<td><b>${fmt(sumObj(bm[k]))}</b></td></tr>`).join('');
-  const mxrFoot=`<tr><td>TOTAL</td>${rs.map(r=>`<td>${fmt(bk.reduce((a,k)=>a+(bm[k][r.code]||0),0))}</td>`).join('')}<td>${fmt(bk.reduce((a,k)=>a+sumObj(bm[k]),0))}</td></tr>`;
 
   const rtoRows=rs.map(r=>`<tr><td>${r.name}</td><td>${fmt(rc[r.code])}</td><td>${fmt(rp[r.code])}</td><td>${delta(rc[r.code],rp[r.code])}</td></tr>`).join('');
   const mkRows=makers.map(k=>`<tr><td>${short(k)}</td><td>${fmt(mc[k]||0)}</td><td>${fmt(mp[k]||0)}</td><td>${delta(mc[k]||0,mp[k]||0)}</td></tr>`).join('');
@@ -287,10 +284,6 @@ function render(){
     <div class="kpi"><div class="l">${prevL}</div><div class="v">${fmt(tp)}</div><div class="d">${delta(tc,tp)} <span class="sub">daily average vs previous month</span></div></div>
     <div class="kpi"><div class="l">Top maker (${MONTHS[cur]})</div><div class="v" style="font-size:20px">${topC?short(topC):'–'}</div><div class="d sub">${topC?fmt(mc[topC])+' units · '+(tc?(mc[topC]/tc*100).toFixed(1):0)+'%':''}</div></div>
     <div class="kpi"><div class="l">Top RTO (${MONTHS[cur]})</div><div class="v" style="font-size:20px">${topR?nameOf(topR[0]):'–'}</div><div class="d sub">${topR?fmt(topR[1])+' units':''}</div></div>
-  </div>
-  <div class="card">
-    <h2>${MFULL[cur]} ${year} (till date) – manufacturer × RTO</h2>
-    <div class="scroll" style="max-height:560px"><table id="mxr"><thead><tr><th>Manufacturer</th>${mxrHead}<th>Total</th></tr></thead><tbody>${mxrRows}</tbody><tfoot>${mxrFoot}</tfoot></table></div>
   </div>
   <div class="card">
     <h2>Top makers – monthly trend (${year})</h2>
@@ -442,7 +435,8 @@ function downloadHist(){
 let cmpYear='4', cmpLevel='main', cmpShow='units', cmpTop=15;
 function rankOf(vals){return vals.map(v=>v>0?1+vals.filter(x=>x>v).length:null)}
 function cmpCompute(){
-  const live=cmpYear==='LIVE',yi=(cmpYear==='ALL'||live)?null:+cmpYear;
+  if(cmpYear==='MTD'&&!allRtos().length)cmpYear='4';
+  const mtd=cmpYear==='MTD',live=cmpYear==='LIVE'||mtd,mi=mtd?refMonth().cur:null,yi=(cmpYear==='ALL'||live)?null:+cmpYear;
   let cols=cmpLevel==='main'?H.districts.map(c=>({id:c,label:H.byCode[c].n,offs:H.offices.filter(o=>o.p===c)}))
                             :H.offices.map(o=>({id:o.c,label:o.n,tag:o.t,offs:[o]}));
   const names=[...H.makers],nix=new Map(names.map((n,i)=>[n,i]));
@@ -450,7 +444,7 @@ function cmpCompute(){
   if(live)cols.forEach(c=>c.offs.forEach(o=>{const r=db.rtos[o.c];if(r)for(const n of Object.keys(r.makers))if(!nix.has(n)){nix.set(n,names.length);names.push(n)}}));
   const nm=names.length,U=Array.from({length:nm},()=>Array(cols.length).fill(0));
   cols.forEach((c,ci)=>c.offs.forEach(o=>{
-    if(live){const r=db.rtos[o.c];if(r)for(const [n,v] of Object.entries(r.makers))U[nix.get(n)][ci]+=sumA(v)}
+    if(live){const r=db.rtos[o.c];if(r)for(const [n,v] of Object.entries(r.makers))U[nix.get(n)][ci]+=mtd?(v[mi]||0):sumA(v)}
     else for(const [ix,v] of Object.entries(o.m))U[+ix][ci]+=yi==null?sumA(v):v[yi]}));
   cols.forEach((c,ci)=>{c.total=U.reduce((a,r)=>a+r[ci],0)});
   const ord=cols.map((_,i)=>i).sort((a,b)=>cols[b].total-cols[a].total);
@@ -460,13 +454,13 @@ function cmpCompute(){
   const colRank=cols.map((_,ci)=>rankOf(M.map(r=>r[ci])));            // rank of each maker within each column
   const rows=M.map((_,m)=>m).filter(m=>mTot[m]>0).sort((a,b)=>mTot[b]-mTot[a]);
   const leaders=cols.map((_,ci)=>{const m=rows.find(r=>colRank[ci][r]===1);return m==null?null:m});
-  return {cols,M,mTot,kRank,colRank,rows,leaders,grand:sumA(mTot),yi,names,live};
+  return {cols,M,mTot,kRank,colRank,rows,leaders,grand:sumA(mTot),yi,names,live,mtd,mi};
 }
 function renderCmp(){
   if(!H)return;
   const sc=$('cmpScroll');const left=sc?sc.scrollLeft:0,topPx=sc?sc.scrollTop:0;
-  const d=cmpCompute(),{cols,M,mTot,kRank,colRank,rows,leaders,grand,names,live}=d;
-  const ylabel=cmpYear==='ALL'?`${H.years[0]}–${H.years[H.years.length-1]} total`:live?'2026 year to date':H.years[+cmpYear];
+  const d=cmpCompute(),{cols,M,mTot,kRank,colRank,rows,leaders,grand,names,live,mtd,mi}=d;
+  const ylabel=cmpYear==='ALL'?`${H.years[0]}–${H.years[H.years.length-1]} total`:mtd?`${MFULL[mi]} ${refMonth().year} (till date)`:live?'2026 year to date':H.years[+cmpYear];
   const offN=cols.reduce((a,c)=>a+c.n,0);
   const shown=cmpTop?rows.slice(0,cmpTop):rows;
   const cell=(m,ci)=>{const u=M[m][ci],r=colRank[ci][m];if(!u)return '<td><span class="sub">–</span></td>';
@@ -478,7 +472,7 @@ function renderCmp(){
   <h2 class="sect">Manufacturer comparison across RTOs</h2>
   <div class="card">
     <div class="row">
-      <label>Year <select id="cmpYear">${H.years.map((y,i)=>`<option value="${i}" ${String(i)===cmpYear?'selected':''}>${y}</option>`).join('')}<option value="LIVE" ${live?'selected':''}>2026 YTD (uploaded offices only)</option><option value="ALL" ${cmpYear==='ALL'?'selected':''}>${H.years[0]}–${H.years[H.years.length-1]} total</option></select></label>
+      <label>Year <select id="cmpYear">${H.years.map((y,i)=>`<option value="${i}" ${String(i)===cmpYear?'selected':''}>${y}</option>`).join('')}${allRtos().length?`<option value="MTD" ${mtd?'selected':''}>${MFULL[refMonth().cur]} ${refMonth().year} (till date, uploaded offices only)</option>`:''}<option value="LIVE" ${cmpYear==='LIVE'?'selected':''}>2026 YTD (uploaded offices only)</option><option value="ALL" ${cmpYear==='ALL'?'selected':''}>${H.years[0]}–${H.years[H.years.length-1]} total</option></select></label>
       <label>Across <select id="cmpLevel"><option value="main" ${cmpLevel==='main'?'selected':''}>Main RTOs (${H.districts.length}, SRTOs included)</option><option value="all" ${cmpLevel==='all'?'selected':''}>All offices (${H.offices.length}, RTOs + SRTOs)</option></select></label>
       <label>Show <select id="cmpShow"><option value="units" ${cmpShow==='units'?'selected':''}>Units</option><option value="rank" ${cmpShow==='rank'?'selected':''}>Rank in each RTO</option><option value="share" ${cmpShow==='share'?'selected':''}>Share of each RTO</option></select></label>
       <label>Makers <select id="cmpTop">${[10,15,25,0].map(n=>`<option value="${n}" ${n===cmpTop?'selected':''}>${n?'Top '+n:'All ('+rows.length+')'}</option>`).join('')}</select></label>
@@ -504,8 +498,8 @@ function renderCmp(){
 }
 function downloadCmp(){
   if(!user||!H)return;
-  const {cols,M,mTot,kRank,colRank,rows,grand,names,live}=cmpCompute();
-  const ylabel=cmpYear==='ALL'?`${H.years[0]}-${H.years[H.years.length-1]}`:live?'2026_YTD_partial':H.years[+cmpYear];
+  const {cols,M,mTot,kRank,colRank,rows,grand,names,live,mtd,mi}=cmpCompute();
+  const ylabel=cmpYear==='ALL'?`${H.years[0]}-${H.years[H.years.length-1]}`:mtd?`${MONTHS[mi]}_${refMonth().year}_MTD_partial`:live?'2026_YTD_partial':H.years[+cmpYear];
   const head=['Kerala rank','Manufacturer','Kerala total',...cols.map(c=>(c.tag?`${c.label} (${c.id})`:c.label)+(live&&cmpLevel==='main'?` [${c.n}/${c.of} offices]`:live&&!c.n?' [no data]':''))];
   const mk=f=>{const a=[[`Manufacturer comparison – ${ylabel} – ${cmpLevel==='main'?'main RTOs (SRTOs included)':'all offices'}`],[],head];
     rows.forEach(m=>a.push([kRank[m],names[m],mTot[m],...cols.map((_,ci)=>f(m,ci))]));return a};
