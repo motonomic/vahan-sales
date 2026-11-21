@@ -120,6 +120,7 @@ const short=n=>n.replace(/\(UNIT OF EICHER LTD\)/,'').replace(/\(IMPORTER:.*\)/,
   .toLowerCase().replace(/(^|[\s-])\w/g,c=>c.toUpperCase()).replace(/\b(Tvs|Bmw|Ola|Klb|Rgm)\b/g,m=>m.toUpperCase());
 
 /* ---------- parse reports (any layout: several sheets, several dated tables per sheet) ---------- */
+const normCode=c=>{const m=/^KL0*(\d+)$/i.exec(String(c).trim());return m?'KL'+m[1].padStart(2,'0'):String(c).trim().toUpperCase()}; // KL1 == KL01
 const TITLE_RE=/of\s+(.+?)\s*-\s*(KL\d+)\s*,.*?\((\d{4})\)/i;
 const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 function cellDate(c){
@@ -155,7 +156,7 @@ function parseSheetBlocks(rows){
       makers[name]=MONTHS.map((_,m)=>cols[m]!=null?num(r[cols[m]]):0);
       prev=i;
     }
-    if(Object.keys(makers).length)blocks.push({name:title[1].trim(),code:title[2].toUpperCase(),year:+title[3],asof,makers});
+    if(Object.keys(makers).length)blocks.push({name:title[1].trim(),code:normCode(title[2]),year:+title[3],asof,makers});
   });
   return blocks;
 }
@@ -181,7 +182,11 @@ async function loadFromDb(){
   const {data,error}=await sb.from('rto_reports').select('*');
   if(error)throw new Error(error.message);
   db={rtos:{}};
-  for(const r of data)db.rtos[r.code]={name:r.name,code:r.code,year:r.year,asof:r.asof,uploaded:r.uploaded,makers:r.makers};
+  for(const r of data){            // tolerate rows saved earlier under un-padded codes (KL1 -> KL01); keep the newest
+    const code=normCode(r.code),cur=db.rtos[code];
+    if(!cur||r.asof>cur.asof||(r.asof===cur.asof&&new Date(r.uploaded)>new Date(cur.uploaded)))
+      db.rtos[code]={name:r.name,code,year:r.year,asof:r.asof,uploaded:r.uploaded,makers:r.makers};
+  }
 }
 
 /* ---------- upload ---------- */
@@ -360,10 +365,10 @@ function renderHist(){
   let table;
   if(scope==='ALL'){
     const rows=H.districts.map(d=>{const os=H.offices.filter(o=>o.p===d);const t=ys.map((_,i)=>sumA(os.map(o=>offT(o)[i])));
-      const lv=os.map(o=>liveYtd(o.c));return {d,os,t,live:lv.every(x=>x!=null)?sumA(lv):null,partial:lv.some(x=>x!=null)&&!lv.every(x=>x!=null)}});
+      const lv=os.map(o=>liveYtd(o.c));return {d,os,t,live:lv.every(x=>x!=null)?sumA(lv):null,partial:lv.some(x=>x!=null)&&!lv.every(x=>x!=null),pSum:sumA(lv.filter(x=>x!=null)),pN:lv.filter(x=>x!=null).length}});
     rows.sort((a,b)=>b.t[L]-a.t[L]);
     table=`<table><thead><tr><th class="l">Main RTO</th><th>Offices</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th title="2026 year to date, only where monthly data is uploaded">2026 YTD</th></tr></thead><tbody>`+
-      rows.map(r=>`<tr><td class="l"><a class="dl" onclick="pickScope('${r.d}')">${H.dmeta[r.d].label}</a></td><td>${r.os.length}</td>${r.t.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(r.t[L],r.t[L-1])}</td><td>${r.live!=null?fmt(r.live):r.partial?'partial':'<span class="sub">–</span>'}</td></tr>`).join('')+
+      rows.map(r=>`<tr><td class="l"><a class="dl" onclick="pickScope('${r.d}')">${H.dmeta[r.d].label}</a></td><td>${r.os.length}</td>${r.t.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(r.t[L],r.t[L-1])}</td><td>${r.live!=null?fmt(r.live):r.partial?`${fmt(r.pSum)} <span class="sub" title="2026 data uploaded for only ${r.pN} of ${r.os.length} offices">(${r.pN}/${r.os.length} offices)</span>`:'<span class="sub">–</span>'}</td></tr>`).join('')+
       `</tbody><tfoot><tr><td class="l">Kerala total</td><td>${offs.length}</td>${tot.map(x=>`<td>${fmt(x)}</td>`).join('')}<td>${pchg(tot[L],tot[L-1])}</td><td></td></tr></tfoot></table>`;
   }else{
     const rt=offs.filter(o=>o.t==='RTO').sort((a,b)=>a.c.localeCompare(b.c));
