@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RTO Sales Dashboard</title>
 <style>
-:root{--bg:#f5f6f8;--card:#fff;--ink:#1c2230;--mute:#6b7385;--line:#e3e6ec;--acc:#1f4fd8;--up:#17803d;--down:#c0392b;--head:#eef1f7}
-@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--ink:#e8ebf2;--mute:#9aa3b5;--line:#2a3140;--acc:#6f95ff;--up:#4cc27a;--down:#ff7b6b;--head:#222938}}
+:root{--selbg:#c8ecd0;--bg:#f5f6f8;--card:#fff;--ink:#1c2230;--mute:#6b7385;--line:#e3e6ec;--acc:#1f4fd8;--up:#17803d;--down:#c0392b;--head:#eef1f7}
+@media (prefers-color-scheme:dark){:root{--selbg:#1f5a33;--bg:#12151c;--card:#1b2029;--ink:#e8ebf2;--mute:#9aa3b5;--line:#2a3140;--acc:#6f95ff;--up:#4cc27a;--down:#ff7b6b;--head:#222938}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header{padding:16px 20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:var(--card)}
@@ -48,6 +48,14 @@ select{padding:5px 8px;border-radius:6px;border:1px solid var(--line);background
 .tag{font-size:11px;color:var(--mute);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:6px}
 a.dl{color:var(--acc);cursor:pointer;text-decoration:none}a.dl:hover{text-decoration:underline}
 th.l,td.l{text-align:left}
+.scroll td:first-child{position:sticky;left:0;z-index:1;background:var(--card)}
+.scroll th:first-child{position:sticky;left:0;z-index:3;background:var(--head)}
+.scroll th{z-index:2}
+.scroll tfoot td:first-child{background:var(--head)}
+.scroll table{min-width:100%}
+.scroll tbody tr,.cmpwrap tbody tr{cursor:pointer}
+.scroll tbody tr:hover td,.cmpwrap tbody tr:hover td{background:var(--head)}
+tbody tr.sel td,.cmpwrap tbody tr.sel td,.cmpwrap tbody tr.sel td.stk,.cmpwrap tbody tr.sel td.top{background:var(--selbg)!important;font-weight:600}
 .cmpwrap{overflow:auto;max-height:640px;border:1px solid var(--line);border-radius:8px}
 .cmpwrap table{font-size:12px}
 .cmpwrap th{white-space:normal;min-width:74px;vertical-align:bottom;top:0;z-index:2}
@@ -301,6 +309,7 @@ function render(){
   </div>`;
   $('topN').onchange=e=>{topN=+e.target.value;drawChart()};
   drawChart();
+  reapplySel();
 }
 
 const PAL=['#1f4fd8','#e8590c','#2f9e44','#9c36b5','#f08c00','#0c8599','#c2255c','#5c7cfa','#66a80f','#495057'];
@@ -400,6 +409,7 @@ function renderHist(){
       <thead><tr><th class="l">Manufacturer</th>${ys.map(y=>`<th>${y}</th>`).join('')}<th>${ys[L]} vs ${ys[L-1]}</th><th>Total</th></tr></thead><tbody>${mrows}</tbody></table></div></div>
   </div>`;
   $('topNh').onchange=e=>{topNh=+e.target.value;drawHistChart()};
+  reapplySel();
   $('dlHist').onclick=downloadHist;
   drawHistChart();
 }
@@ -431,11 +441,16 @@ function downloadHist(){
 let cmpYear='4', cmpLevel='main', cmpShow='units', cmpTop=15;
 function rankOf(vals){return vals.map(v=>v>0?1+vals.filter(x=>x>v).length:null)}
 function cmpCompute(){
-  const yi=cmpYear==='ALL'?null:+cmpYear;
+  const live=cmpYear==='LIVE',yi=(cmpYear==='ALL'||live)?null:+cmpYear;
   let cols=cmpLevel==='main'?H.districts.map(c=>({id:c,label:H.byCode[c].n,offs:H.offices.filter(o=>o.p===c)}))
                             :H.offices.map(o=>({id:o.c,label:o.n,tag:o.t,offs:[o]}));
-  const nm=H.makers.length,U=Array.from({length:nm},()=>Array(cols.length).fill(0));
-  cols.forEach((c,ci)=>c.offs.forEach(o=>{for(const [ix,v] of Object.entries(o.m))U[+ix][ci]+=yi==null?sumA(v):v[yi]}));
+  const names=[...H.makers],nix=new Map(names.map((n,i)=>[n,i]));
+  cols.forEach(c=>{c.of=c.offs.length;c.n=live?c.offs.filter(o=>db.rtos[o.c]).length:c.of});
+  if(live)cols.forEach(c=>c.offs.forEach(o=>{const r=db.rtos[o.c];if(r)for(const n of Object.keys(r.makers))if(!nix.has(n)){nix.set(n,names.length);names.push(n)}}));
+  const nm=names.length,U=Array.from({length:nm},()=>Array(cols.length).fill(0));
+  cols.forEach((c,ci)=>c.offs.forEach(o=>{
+    if(live){const r=db.rtos[o.c];if(r)for(const [n,v] of Object.entries(r.makers))U[nix.get(n)][ci]+=sumA(v)}
+    else for(const [ix,v] of Object.entries(o.m))U[+ix][ci]+=yi==null?sumA(v):v[yi]}));
   cols.forEach((c,ci)=>{c.total=U.reduce((a,r)=>a+r[ci],0)});
   const ord=cols.map((_,i)=>i).sort((a,b)=>cols[b].total-cols[a].total);
   cols=ord.map(i=>cols[i]);
@@ -444,36 +459,38 @@ function cmpCompute(){
   const colRank=cols.map((_,ci)=>rankOf(M.map(r=>r[ci])));            // rank of each maker within each column
   const rows=M.map((_,m)=>m).filter(m=>mTot[m]>0).sort((a,b)=>mTot[b]-mTot[a]);
   const leaders=cols.map((_,ci)=>{const m=rows.find(r=>colRank[ci][r]===1);return m==null?null:m});
-  return {cols,M,mTot,kRank,colRank,rows,leaders,grand:sumA(mTot),yi};
+  return {cols,M,mTot,kRank,colRank,rows,leaders,grand:sumA(mTot),yi,names,live};
 }
 function renderCmp(){
   if(!H)return;
   const sc=$('cmpScroll');const left=sc?sc.scrollLeft:0,topPx=sc?sc.scrollTop:0;
-  const d=cmpCompute(),{cols,M,mTot,kRank,colRank,rows,leaders,grand}=d;
-  const ylabel=cmpYear==='ALL'?`${H.years[0]}–${H.years[H.years.length-1]} total`:H.years[+cmpYear];
+  const d=cmpCompute(),{cols,M,mTot,kRank,colRank,rows,leaders,grand,names,live}=d;
+  const ylabel=cmpYear==='ALL'?`${H.years[0]}–${H.years[H.years.length-1]} total`:live?'2026 year to date':H.years[+cmpYear];
+  const offN=cols.reduce((a,c)=>a+c.n,0);
   const shown=cmpTop?rows.slice(0,cmpTop):rows;
   const cell=(m,ci)=>{const u=M[m][ci],r=colRank[ci][m];if(!u)return '<td><span class="sub">–</span></td>';
     const txt=cmpShow==='units'?fmt(u):cmpShow==='rank'?'#'+r:(u/cols[ci].total*100).toFixed(1)+'%';
-    return `<td class="${r===1?'top':''}" title="${short(H.makers[m])} · ${cols[ci].label}: ${fmt(u)} units, rank ${r}">${txt}</td>`};
+    return `<td class="${r===1?'top':''}" title="${short(names[m])} · ${cols[ci].label}: ${fmt(u)} units, rank ${r}">${txt}</td>`};
   const lead={};leaders.forEach(m=>{if(m!=null)lead[m]=(lead[m]||0)+1});
-  const leadTxt=Object.entries(lead).sort((a,b)=>b[1]-a[1]).map(([m,n])=>`<b>${short(H.makers[m])}</b> leads in ${n}`).join(' · ');
+  const leadTxt=Object.entries(lead).sort((a,b)=>b[1]-a[1]).map(([m,n])=>`<b>${short(names[m])}</b> leads in ${n}`).join(' · ');
   $('cmp').innerHTML=`
   <h2 class="sect">Manufacturer comparison across RTOs</h2>
   <div class="card">
     <div class="row">
-      <label>Year <select id="cmpYear">${H.years.map((y,i)=>`<option value="${i}" ${String(i)===cmpYear?'selected':''}>${y}</option>`).join('')}<option value="ALL" ${cmpYear==='ALL'?'selected':''}>${H.years[0]}–${H.years[H.years.length-1]} total</option></select></label>
+      <label>Year <select id="cmpYear">${H.years.map((y,i)=>`<option value="${i}" ${String(i)===cmpYear?'selected':''}>${y}</option>`).join('')}<option value="LIVE" ${live?'selected':''}>2026 YTD (uploaded offices only)</option><option value="ALL" ${cmpYear==='ALL'?'selected':''}>${H.years[0]}–${H.years[H.years.length-1]} total</option></select></label>
       <label>Across <select id="cmpLevel"><option value="main" ${cmpLevel==='main'?'selected':''}>Main RTOs (${H.districts.length}, SRTOs included)</option><option value="all" ${cmpLevel==='all'?'selected':''}>All offices (${H.offices.length}, RTOs + SRTOs)</option></select></label>
       <label>Show <select id="cmpShow"><option value="units" ${cmpShow==='units'?'selected':''}>Units</option><option value="rank" ${cmpShow==='rank'?'selected':''}>Rank in each RTO</option><option value="share" ${cmpShow==='share'?'selected':''}>Share of each RTO</option></select></label>
       <label>Makers <select id="cmpTop">${[10,15,25,0].map(n=>`<option value="${n}" ${n===cmpTop?'selected':''}>${n?'Top '+n:'All ('+rows.length+')'}</option>`).join('')}</select></label>
       <span style="flex:1"></span>
       <button class="btn ghost" id="dlCmp" ${user?'':'disabled'} title="${user?'':'Sign in to download'}">⬇ Download (.xlsx)</button>
     </div>
-    <div class="sub" style="margin-bottom:8px">${ylabel} · Kerala total ${fmt(grand)} · ranked by Kerala total · shaded cell = #1 maker in that column. ${leadTxt}</div>
+    ${live?`<div class="sub" style="margin-bottom:6px;color:var(--down)"><b>Partial data:</b> 2026 monthly files are uploaded for ${offN} of ${H.offices.length} offices${cmpLevel==='main'?` (${cols.filter(c=>c.n===c.of).length} of ${cols.length} main RTOs complete)`:''}. Totals and ranks cover only those offices${latestAsof()?`, as of ${new Date(latestAsof()+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}`:''}.</div>`:''}
+    <div class="sub" style="margin-bottom:8px">${ylabel} · Kerala total ${fmt(grand)} · ranked by Kerala total · shaded cell = #1 maker in that column · click a row to highlight it in green. ${leadTxt}</div>
     <div class="cmpwrap" id="cmpScroll"><table>
-      <thead><tr><th class="stk">Kerala rank · Manufacturer</th><th>Kerala total</th>${cols.map(c=>`<th title="${c.label}${c.tag?' ('+c.tag+')':''}">${c.label}${c.tag?`<div class="sub">${c.tag}</div>`:''}</th>`).join('')}</tr></thead>
-      <tbody>${shown.map(m=>`<tr><td class="stk"><span class="rk">#${kRank[m]}</span> ${short(H.makers[m])}</td><td><b>${fmt(mTot[m])}</b></td>${cols.map((_,ci)=>cell(m,ci)).join('')}</tr>`).join('')}</tbody>
+      <thead><tr><th class="stk">Kerala rank · Manufacturer</th><th>Kerala total</th>${cols.map(c=>`<th title="${c.label}${c.tag?' ('+c.tag+')':''}">${c.label}${c.tag?`<div class="sub">${c.tag}</div>`:''}${live&&cmpLevel==='main'?`<div class="sub">${c.n?`${c.n}/${c.of} offices`:'no data'}</div>`:live&&!c.n?'<div class="sub">no data</div>':''}</th>`).join('')}</tr></thead>
+      <tbody>${shown.map(m=>`<tr data-k="${names[m]}"><td class="stk"><span class="rk">#${kRank[m]}</span> ${short(names[m])}</td><td><b>${fmt(mTot[m])}</b></td>${cols.map((_,ci)=>cell(m,ci)).join('')}</tr>`).join('')}</tbody>
       <tfoot><tr><td class="stk">Total (all makers)</td><td>${fmt(grand)}</td>${cols.map(c=>`<td>${fmt(c.total)}</td>`).join('')}</tr>
-        <tr><td class="stk">#1 maker</td><td>${leaders.length?'':''}</td>${leaders.map(m=>`<td>${m==null?'–':short(H.makers[m]).split(' ')[0]}</td>`).join('')}</tr></tfoot>
+        <tr><td class="stk">#1 maker</td><td>${leaders.length?'':''}</td>${leaders.map(m=>`<td>${m==null?'–':short(names[m]).split(' ')[0]}</td>`).join('')}</tr></tfoot>
     </table></div>
   </div>`;
   const sc2=$('cmpScroll');sc2.scrollLeft=left;sc2.scrollTop=topPx;
@@ -482,14 +499,15 @@ function renderCmp(){
   $('cmpShow').onchange=e=>{cmpShow=e.target.value;renderCmp()};
   $('cmpTop').onchange=e=>{cmpTop=+e.target.value;renderCmp()};
   $('dlCmp').onclick=downloadCmp;
+  reapplySel();
 }
 function downloadCmp(){
   if(!user||!H)return;
-  const {cols,M,mTot,kRank,colRank,rows,grand}=cmpCompute();
-  const ylabel=cmpYear==='ALL'?`${H.years[0]}-${H.years[H.years.length-1]}`:H.years[+cmpYear];
-  const head=['Kerala rank','Manufacturer','Kerala total',...cols.map(c=>c.tag?`${c.label} (${c.id})`:c.label)];
+  const {cols,M,mTot,kRank,colRank,rows,grand,names,live}=cmpCompute();
+  const ylabel=cmpYear==='ALL'?`${H.years[0]}-${H.years[H.years.length-1]}`:live?'2026_YTD_partial':H.years[+cmpYear];
+  const head=['Kerala rank','Manufacturer','Kerala total',...cols.map(c=>(c.tag?`${c.label} (${c.id})`:c.label)+(live&&cmpLevel==='main'?` [${c.n}/${c.of} offices]`:live&&!c.n?' [no data]':''))];
   const mk=f=>{const a=[[`Manufacturer comparison – ${ylabel} – ${cmpLevel==='main'?'main RTOs (SRTOs included)':'all offices'}`],[],head];
-    rows.forEach(m=>a.push([kRank[m],H.makers[m],mTot[m],...cols.map((_,ci)=>f(m,ci))]));return a};
+    rows.forEach(m=>a.push([kRank[m],names[m],mTot[m],...cols.map((_,ci)=>f(m,ci))]));return a};
   const wb=XLSX.utils.book_new();const w=[10,46,12,...cols.map(()=>13)];
   const add=(n,a)=>{const ws=XLSX.utils.aoa_to_sheet(a);ws['!cols']=w.map(x=>({wch:x}));ws['!freeze']={xSplit:3,ySplit:3};XLSX.utils.book_append_sheet(wb,ws,n)};
   const u=mk((m,ci)=>M[m][ci]);u.push(['','TOTAL',grand,...cols.map(c=>c.total)]);add('Units',u);
@@ -498,6 +516,17 @@ function downloadCmp(){
   const dd=new Date(),p=n=>String(n).padStart(2,'0');
   XLSX.writeFile(wb,`Manufacturer_comparison_${cmpLevel}_${ylabel}_${dd.getFullYear()}${p(dd.getMonth()+1)}${p(dd.getDate())}.xlsx`);
 }
+
+/* ---------- row highlight (click a row in a large table; stays green while scrolling sideways) ---------- */
+const selRows=new Set();
+const rowKey=tr=>{const box=tr.closest('.cmpwrap')?'cmp':((tr.closest('.card')||{}).querySelector?(tr.closest('.card').querySelector('h2')||{}).textContent||'':'');
+  return box+'|'+(tr.dataset.k||tr.children[0].innerText.replace(/\s+/g,' ').trim())};
+function reapplySel(){document.querySelectorAll('.scroll tbody tr, .cmpwrap tbody tr').forEach(tr=>tr.classList.toggle('sel',selRows.has(rowKey(tr))))}
+document.addEventListener('click',e=>{
+  const tr=e.target.closest('.scroll tbody tr, .cmpwrap tbody tr');
+  if(!tr||e.target.closest('a'))return;
+  const k=rowKey(tr);selRows.has(k)?selRows.delete(k):selRows.add(k);tr.classList.toggle('sel');
+});
 
 /* ---------- report download ---------- */
 function downloadReport(){
