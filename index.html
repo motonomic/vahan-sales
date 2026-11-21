@@ -98,8 +98,8 @@ tbody tr.sel td,.cmpwrap tbody tr.sel td,.cmpwrap tbody tr.sel td.stk,.cmpwrap t
         <input type="file" id="file" accept=".xlsx,.xls,.csv" multiple hidden>
       </div>
       <div id="msg"></div>
+      <details style="margin-top:8px"><summary class="sub" id="chipsSum" style="cursor:pointer">Loaded RTOs</summary><div id="chips" style="margin-top:6px"></div></details>
     </div>
-    <div class="sub" style="margin:0 0 12px">Loaded RTOs: <span id="chips"></span></div>
     <div id="hist"></div>
     <div id="cmp"></div>
     <h2 class="sect" id="liveHead"></h2>
@@ -259,6 +259,7 @@ function render(){
   renderHist();renderCmp();
   const rs=rtoList(), all=allRtos();
   $('chips').innerHTML=all.map(r=>`<span class="chip">${r.name} (${r.code}) · ${new Date(r.asof+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>`).join('')||'<span class="sub">none</span>';
+  $('chipsSum').textContent=`Loaded RTOs: ${all.length} (click to list)`;
   $('dlReport').disabled=!rs.length||!user;$('dlReport').title=user?'':'Sign in to download the report';
   $('liveHead').textContent=`2026 monthly data – ${scopeLabel()}`;
   if(all.length)$('asof').textContent=`2026 data as of ${new Date(latestAsof()+'T00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${all.length} RTO${all.length>1?'s':''} uploaded`;
